@@ -1,0 +1,22 @@
+// settings.gradle.kts
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven(url = "https://api.xposed.info/")
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven(url = "https://api.xposed.info/")
+    }
+}
+
+rootProject.name = "HeytapEngineManager"
+include(":app")
+ 
