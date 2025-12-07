@@ -24,11 +24,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build with Gradle
-        run: ./gradlew build
-        
-      - name: Upload build artifacts
+        run: ./gradlew assembleDebug assembleRelease
+
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-build-outputs
-          path: app/build/outputs/
+          name: app-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
           if-no-files-found: error
