@@ -18,8 +18,15 @@ public class ConfigManager {
     public static final String PREF_NAME = "xposed_search_engines";
     private static final String KEY_ENGINES = "engines";
 
-    // 使用 MODE_WORLD_READABLE 以便 Xposed hook 可以通过 XSharedPreferences 读取
-    // 注意: 虽然此模式已被标记为 deprecated，但对于 Xposed 模块来说是必需的
+    /**
+     * 使用 MODE_WORLD_READABLE 以便 Xposed hook 可以通过 XSharedPreferences 读取配置
+     * 
+     * 安全说明:
+     * - 此文件包含搜索引擎配置（引擎名称、搜索 URL、启用状态）
+     * - 不包含任何敏感信息（如密码、令牌等）
+     * - 这是 Xposed 模块跨进程共享配置的标准做法
+     * - 虽然此模式已被标记为 deprecated，但对于 Xposed 模块来说是必需的
+     */
     @SuppressWarnings("deprecation")
     private static final int PREFS_MODE = Context.MODE_WORLD_READABLE;
 

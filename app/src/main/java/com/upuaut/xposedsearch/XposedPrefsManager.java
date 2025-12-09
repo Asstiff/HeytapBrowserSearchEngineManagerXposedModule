@@ -92,6 +92,14 @@ public class XposedPrefsManager {
 
     /**
      * 直接从文件读取配置（备用方案）
+     * 
+     * 注意: 此方法使用硬编码路径，因为在 Xposed hook 环境中无法使用 Android 标准 API
+     * 获取其他应用的数据目录。这些路径覆盖了大多数 Android 设备配置：
+     * - /data/data/: 标准单用户路径
+     * - /data/user/0/: 多用户设备的主用户路径
+     * - /data/user_de/0/: 设备加密存储路径
+     * 
+     * 对于特殊的 ROM 或多用户场景，XSharedPreferences 是首选方案
      */
     private static String readConfigFromFile() {
         // 尝试多个可能的路径
@@ -128,7 +136,7 @@ public class XposedPrefsManager {
         try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                sb.append(line);
+                sb.append(line).append("\n");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Error reading file: " + e.getMessage());
@@ -172,15 +180,16 @@ public class XposedPrefsManager {
 
     /**
      * 解码 XML 实体
+     * 注意: &amp; 必须最后解码，因为其他实体解码后可能会引入 & 字符
      */
     private static String decodeXmlEntities(String text) {
         if (text == null) return null;
         return text
             .replace("&lt;", "<")
             .replace("&gt;", ">")
-            .replace("&amp;", "&")
             .replace("&quot;", "\"")
-            .replace("&apos;", "'");
+            .replace("&apos;", "'")
+            .replace("&amp;", "&"); // 必须最后处理
     }
 
     /**
