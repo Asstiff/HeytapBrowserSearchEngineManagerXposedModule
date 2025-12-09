@@ -27,6 +27,13 @@ public class XposedPrefsManager {
     private static final String PREF_NAME = "xposed_search_engines";
     private static final String KEY_ENGINES = "engines";
 
+    // 可能的配置文件路径
+    private static final String[] POSSIBLE_PREFS_PATHS = {
+        "/data/data/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml",
+        "/data/user/0/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml",
+        "/data/user_de/0/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml"
+    };
+
     private static XSharedPreferences xPrefs;
     private static long lastModTime = 0;
     private static String cachedJson = null;
@@ -50,14 +57,42 @@ public class XposedPrefsManager {
     /**
      * 从 XSharedPreferences 或文件加载配置
      * 
-     * @return 配置列表，如果读取失败返回空列表
+     * @return 配置列表，如果读取失败返回 null，如果成功但配置为空返回空列表
      */
     public static List<EngineConfigData> loadEngines() {
         String json = readConfigJson();
-        if (json == null || json.isEmpty()) {
-            return new ArrayList<>();
+        if (json == null) {
+            // 无法读取文件
+            return null;
         }
-        return parseJson(json);
+        
+        // 解析 JSON，如果解析结果为空列表则返回空列表
+        List<EngineConfigData> result = parseJson(json);
+        return result;
+    }
+
+    /**
+     * 检查配置文件是否可读
+     */
+    public static boolean isPrefsReadable() {
+        if (xPrefs != null) {
+            try {
+                File prefsFile = xPrefs.getFile();
+                return prefsFile.exists() && prefsFile.canRead();
+            } catch (Throwable t) {
+                // ignore
+            }
+        }
+        
+        // 检查备用路径
+        for (String path : POSSIBLE_PREFS_PATHS) {
+            File file = new File(path);
+            if (file.exists() && file.canRead()) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     /**
@@ -93,7 +128,7 @@ public class XposedPrefsManager {
     /**
      * 直接从文件读取配置（备用方案）
      * 
-     * 注意: 此方法使用硬编码路径，因为在 Xposed hook 环境中无法使用 Android 标准 API
+     * 注意: 此方法使用预定义路径，因为在 Xposed hook 环境中无法使用 Android 标准 API
      * 获取其他应用的数据目录。这些路径覆盖了大多数 Android 设备配置：
      * - /data/data/: 标准单用户路径
      * - /data/user/0/: 多用户设备的主用户路径
@@ -102,14 +137,7 @@ public class XposedPrefsManager {
      * 对于特殊的 ROM 或多用户场景，XSharedPreferences 是首选方案
      */
     private static String readConfigFromFile() {
-        // 尝试多个可能的路径
-        String[] possiblePaths = {
-            "/data/data/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml",
-            "/data/user/0/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml",
-            "/data/user_de/0/" + PACKAGE_NAME + "/shared_prefs/" + PREF_NAME + ".xml"
-        };
-
-        for (String path : possiblePaths) {
+        for (String path : POSSIBLE_PREFS_PATHS) {
             try {
                 File file = new File(path);
                 if (file.exists() && file.canRead()) {

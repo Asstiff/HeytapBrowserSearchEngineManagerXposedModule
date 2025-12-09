@@ -68,18 +68,33 @@ public class ConfigManager {
     }
 
     /**
-     * 将 SharedPreferences 文件设置为 world-readable
+     * 将 SharedPreferences 文件及其父目录设置为 world-readable
      * 这是 Xposed 模块跨进程读取配置的标准做法
+     * 
+     * 需要设置:
+     * 1. shared_prefs 目录需要 world-executable (r-x) 以便其他进程可以遍历进入
+     * 2. prefs 文件需要 world-readable (r--) 以便其他进程可以读取
      */
     private static void makePrefsWorldReadable(Context context) {
         try {
-            File prefsDir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
+            File dataDir = new File(context.getApplicationInfo().dataDir);
+            File prefsDir = new File(dataDir, "shared_prefs");
             File prefsFile = new File(prefsDir, PREF_NAME + ".xml");
             
+            // 设置 data 目录可执行（让其他进程可以进入）
+            boolean dataDirSuccess = dataDir.setExecutable(true, false);
+            Log.d(TAG, "[APP] Set data dir executable: " + dataDirSuccess);
+            
+            // 设置 shared_prefs 目录可执行（让其他进程可以进入）
+            if (prefsDir.exists()) {
+                boolean prefsDirSuccess = prefsDir.setExecutable(true, false);
+                Log.d(TAG, "[APP] Set prefs dir executable: " + prefsDirSuccess);
+            }
+            
+            // 设置配置文件可读
             if (prefsFile.exists()) {
-                // 设置文件可被其他进程读取
-                boolean success = prefsFile.setReadable(true, false);
-                if (success) {
+                boolean prefsFileSuccess = prefsFile.setReadable(true, false);
+                if (prefsFileSuccess) {
                     Log.d(TAG, "[APP] Set prefs file world-readable: " + prefsFile.getAbsolutePath());
                 } else {
                     Log.w(TAG, "[APP] Failed to set prefs file world-readable");

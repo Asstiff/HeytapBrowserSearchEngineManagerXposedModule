@@ -707,7 +707,7 @@ public class XposedInit implements IXposedHookLoadPackage {
     /**
      * 刷新配置
      * 优先使用 XSharedPreferences 读取配置（更可靠）
-     * 如果失败，则回退到 ContentProvider
+     * 只有在 XSharedPreferences 读取失败时才回退到 ContentProvider
      */
     private void refreshConfig() {
         // 方法1: 使用 XSharedPreferences（更可靠，不依赖主应用进程）
@@ -718,22 +718,26 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
 
         // 方法2: 回退到 ContentProvider（需要主应用运行）
+        // 注意: 仅在 XSharedPreferences 完全无法读取时使用
+        XposedBridge.log("XposedSearch: XSharedPreferences failed, trying ContentProvider fallback");
         refreshConfigFromProvider();
     }
 
     /**
      * 从 XSharedPreferences 读取配置
-     * @return true 如果成功读取，false 如果失败
+     * @return true 如果成功读取（包括空配置），false 如果读取失败
      */
     private boolean refreshConfigFromPrefs() {
         try {
             List<XposedPrefsManager.EngineConfigData> configs = XposedPrefsManager.loadEngines();
             
-            if (configs.isEmpty()) {
-                XposedBridge.log("XposedSearch: XSharedPreferences returned empty config");
+            // 如果返回 null，表示无法读取文件，需要回退到 ContentProvider
+            if (configs == null) {
+                XposedBridge.log("XposedSearch: XSharedPreferences file not readable");
                 return false;
             }
-
+            
+            // 空配置也是有效的，不应该被当作失败
             engineConfigs.clear();
             for (XposedPrefsManager.EngineConfigData data : configs) {
                 engineConfigs.put(data.key, new EngineConfig(
