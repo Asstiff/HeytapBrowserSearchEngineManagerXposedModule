@@ -9,7 +9,6 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -54,7 +53,6 @@ public class ConfigManager {
 
     /**
      * 处理从浏览器发现的引擎
-     * 现在不会直接更新未修改的引擎，而是标记更新供用户确认
      * @return true 表示有更新，false 表示无变化
      */
     public static boolean handleDiscoveredEngine(Context context, String key, String name, String searchUrl) {
@@ -83,6 +81,7 @@ public class ConfigManager {
             return true;
 
         } else if (existing.isBuiltin) {
+            // 已存在的内置引擎
             boolean changed = false;
 
             // 如果之前被标记为已消失，现在又出现了，清除标记
@@ -92,7 +91,7 @@ public class ConfigManager {
                 Log.d(TAG, "[APP] engine reappeared: " + key);
             }
 
-            // 检查是否有更新
+            // 检查是否有更新（与原始值比较）
             boolean nameChanged = name != null && !name.equals(existing.originalName);
             boolean urlChanged = searchUrl != null && !searchUrl.isEmpty()
                     && !searchUrl.equals(existing.originalSearchUrl);
@@ -100,9 +99,12 @@ public class ConfigManager {
             if (nameChanged || urlChanged) {
                 if (existing.isModified) {
                     // 用户已修改过，静默更新原始信息，但保持用户的修改
-                    existing.originalName = name != null ? name : existing.originalName;
-                    existing.originalSearchUrl = (searchUrl != null && !searchUrl.isEmpty())
-                            ? searchUrl : existing.originalSearchUrl;
+                    if (name != null) {
+                        existing.originalName = name;
+                    }
+                    if (searchUrl != null && !searchUrl.isEmpty()) {
+                        existing.originalSearchUrl = searchUrl;
+                    }
                     existing.hasUpdate = false;
                     existing.pendingName = null;
                     existing.pendingSearchUrl = null;
@@ -111,16 +113,45 @@ public class ConfigManager {
                 } else {
                     // 用户未修改过，标记为有更新待确认
                     existing.hasUpdate = true;
-                    existing.pendingName = nameChanged ? name : null;
-                    existing.pendingSearchUrl = urlChanged ? searchUrl : null;
+                    // 始终记录待更新的值，即使只有一个变化
+                    existing.pendingName = name;
+                    existing.pendingSearchUrl = searchUrl;
                     changed = true;
-                    Log.d(TAG, "[APP] marked update available for engine: " + key);
+                    Log.d(TAG, "[APP] marked update available for engine: " + key +
+                            " (name: " + existing.originalName + " -> " + name +
+                            ", url changed: " + urlChanged + ")");
                 }
             }
 
             if (changed) {
                 saveEngines(context, engines);
                 return true;
+            }
+
+        } else {
+            // 已存在同 key 的自定义引擎，标记冲突
+            if (!existing.hasBuiltinConflict) {
+                existing.hasBuiltinConflict = true;
+                existing.conflictBuiltinName = name;
+                existing.conflictBuiltinSearchUrl = searchUrl;
+                saveEngines(context, engines);
+                Log.d(TAG, "[APP] custom engine conflict with new builtin: " + key);
+                return true;
+            } else {
+                // 已经标记过冲突，更新冲突信息
+                boolean changed = false;
+                if (name != null && !name.equals(existing.conflictBuiltinName)) {
+                    existing.conflictBuiltinName = name;
+                    changed = true;
+                }
+                if (searchUrl != null && !searchUrl.equals(existing.conflictBuiltinSearchUrl)) {
+                    existing.conflictBuiltinSearchUrl = searchUrl;
+                    changed = true;
+                }
+                if (changed) {
+                    saveEngines(context, engines);
+                    return true;
+                }
             }
         }
 
@@ -145,6 +176,15 @@ public class ConfigManager {
                     Log.d(TAG, "[APP] marked engine as removed: " + engine.key);
                 }
             }
+
+            // 如果自定义引擎之前有冲突，但内置引擎消失了，清除冲突标记
+            if (!engine.isBuiltin && engine.hasBuiltinConflict && !discoveredKeys.contains(engine.key)) {
+                engine.hasBuiltinConflict = false;
+                engine.conflictBuiltinName = null;
+                engine.conflictBuiltinSearchUrl = null;
+                changed = true;
+                Log.d(TAG, "[APP] cleared builtin conflict for custom engine: " + engine.key);
+            }
         }
 
         if (changed) {
@@ -163,12 +203,12 @@ public class ConfigManager {
 
         if (engine == null || !engine.hasUpdate) return;
 
-        // 应用更新
+        // 应用更新 - 同时更新显示值和原始值
         if (engine.pendingName != null) {
             engine.name = engine.pendingName;
             engine.originalName = engine.pendingName;
         }
-        if (engine.pendingSearchUrl != null) {
+        if (engine.pendingSearchUrl != null && !engine.pendingSearchUrl.isEmpty()) {
             engine.searchUrl = engine.pendingSearchUrl;
             engine.originalSearchUrl = engine.pendingSearchUrl;
         }
@@ -177,6 +217,7 @@ public class ConfigManager {
         engine.hasUpdate = false;
         engine.pendingName = null;
         engine.pendingSearchUrl = null;
+        engine.isModified = false;  // 应用更新后不再是修改状态
 
         saveEngines(context, engines);
         Log.d(TAG, "[APP] applied pending update for engine: " + key);
@@ -197,7 +238,7 @@ public class ConfigManager {
         if (engine.pendingName != null) {
             engine.originalName = engine.pendingName;
         }
-        if (engine.pendingSearchUrl != null) {
+        if (engine.pendingSearchUrl != null && !engine.pendingSearchUrl.isEmpty()) {
             engine.originalSearchUrl = engine.pendingSearchUrl;
         }
 
@@ -236,6 +277,86 @@ public class ConfigManager {
     }
 
     /**
+     * 将自定义引擎转换为内置引擎（处理冲突情况）
+     * 用户选择"转为内置"时调用
+     */
+    public static void convertCustomToBuiltin(Context context, String key) {
+        if (context == null || key == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || engine.isBuiltin || !engine.hasBuiltinConflict) return;
+
+        // 转换为内置引擎，标记为已修改状态
+        // 原始信息使用浏览器的内置引擎信息
+        // 当前使用的信息保持用户之前的自定义内容
+        engine.isBuiltin = true;
+        engine.isModified = true;
+        engine.originalName = engine.conflictBuiltinName;
+        engine.originalSearchUrl = engine.conflictBuiltinSearchUrl;
+
+        // 清除冲突标记
+        engine.hasBuiltinConflict = false;
+        engine.conflictBuiltinName = null;
+        engine.conflictBuiltinSearchUrl = null;
+
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] converted custom to builtin (modified): " + key);
+    }
+
+    /**
+     * 创建自定义引擎副本（处理冲突情况）
+     * 用户选择"创建副本"时调用
+     * @return 新引擎的 key，如果失败返回 null
+     */
+    public static String createCustomEngineCopy(Context context, String key) {
+        if (context == null || key == null) return null;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || engine.isBuiltin || !engine.hasBuiltinConflict) return null;
+
+        // 保存冲突的内置引擎信息
+        String builtinName = engine.conflictBuiltinName;
+        String builtinSearchUrl = engine.conflictBuiltinSearchUrl;
+
+        // 为自定义引擎生成新 key
+        String newKey = key + "Custom";
+        int suffix = 1;
+        while (findByKey(engines, newKey) != null) {
+            newKey = key + "Custom" + suffix;
+            suffix++;
+        }
+
+        // 更新自定义引擎的 key，清除冲突标记
+        engine.key = newKey;
+        engine.hasBuiltinConflict = false;
+        engine.conflictBuiltinName = null;
+        engine.conflictBuiltinSearchUrl = null;
+
+        // 创建新的内置引擎（使用原来的 key 和浏览器的配置）
+        SearchEngineConfig builtinEngine = new SearchEngineConfig();
+        builtinEngine.key = key;
+        builtinEngine.name = builtinName != null ? builtinName : key;
+        builtinEngine.searchUrl = builtinSearchUrl != null ? builtinSearchUrl : "";
+        builtinEngine.enabled = true;
+        builtinEngine.isBuiltin = true;
+        builtinEngine.isModified = false;
+        builtinEngine.originalName = builtinEngine.name;
+        builtinEngine.originalSearchUrl = builtinEngine.searchUrl;
+        builtinEngine.isRemovedFromBrowser = false;
+        builtinEngine.hasUpdate = false;
+
+        engines.add(builtinEngine);
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] created custom engine copy: " + key + " -> " + newKey +
+                ", builtin name: " + builtinName + ", url: " + builtinSearchUrl);
+        return newKey;
+    }
+
+    /**
      * 恢复引擎为默认设置
      */
     public static boolean resetEngine(Context context, String key) {
@@ -246,13 +367,18 @@ public class ConfigManager {
 
         if (engine == null || !engine.canReset()) return false;
 
-        engine.name = engine.originalName != null ? engine.originalName : engine.name;
-        engine.searchUrl = engine.originalSearchUrl != null ? engine.originalSearchUrl : engine.searchUrl;
+        // 恢复为原始值
+        if (engine.originalName != null) {
+            engine.name = engine.originalName;
+        }
+        if (engine.originalSearchUrl != null) {
+            engine.searchUrl = engine.originalSearchUrl;
+        }
         engine.enabled = true;
         engine.isModified = false;
 
         saveEngines(context, engines);
-        Log.d(TAG, "[APP] reset engine: " + key);
+        Log.d(TAG, "[APP] reset engine: " + key + " to name: " + engine.name + ", url: " + engine.searchUrl);
         return true;
     }
 
@@ -267,17 +393,28 @@ public class ConfigManager {
 
         if (engine == null) return;
 
-        engine.name = name;
-        engine.searchUrl = searchUrl;
-        engine.enabled = enabled;
-
-        // 只有内置引擎需要标记为已修改
+        // 检查是否真的有修改（对于内置引擎，与原始值比较）
         if (engine.isBuiltin) {
-            engine.isModified = true;
+            boolean nameChanged = !name.equals(engine.originalName);
+            boolean urlChanged = (searchUrl != null && engine.originalSearchUrl != null)
+                    ? !searchUrl.equals(engine.originalSearchUrl)
+                    : (searchUrl != null || engine.originalSearchUrl != null);
+
+            engine.name = name;
+            engine.searchUrl = searchUrl;
+            engine.enabled = enabled;
+            engine.isModified = nameChanged || urlChanged;
+
+            Log.d(TAG, "[APP] updated builtin engine by user: " + key +
+                    ", isModified: " + engine.isModified +
+                    ", originalName: " + engine.originalName + ", newName: " + name);
+        } else {
+            engine.name = name;
+            engine.searchUrl = searchUrl;
+            engine.enabled = enabled;
         }
 
         saveEngines(context, engines);
-        Log.d(TAG, "[APP] updated engine by user: " + key);
     }
 
     /**
@@ -413,7 +550,6 @@ public class ConfigManager {
                     if (cfg.originalSearchUrl != null) {
                         obj.put("originalSearchUrl", cfg.originalSearchUrl);
                     }
-                    // 新增字段
                     obj.put("hasUpdate", cfg.hasUpdate);
                     if (cfg.pendingName != null) {
                         obj.put("pendingName", cfg.pendingName);
@@ -422,6 +558,13 @@ public class ConfigManager {
                         obj.put("pendingSearchUrl", cfg.pendingSearchUrl);
                     }
                     obj.put("isRemovedFromBrowser", cfg.isRemovedFromBrowser);
+                    obj.put("hasBuiltinConflict", cfg.hasBuiltinConflict);
+                    if (cfg.conflictBuiltinName != null) {
+                        obj.put("conflictBuiltinName", cfg.conflictBuiltinName);
+                    }
+                    if (cfg.conflictBuiltinSearchUrl != null) {
+                        obj.put("conflictBuiltinSearchUrl", cfg.conflictBuiltinSearchUrl);
+                    }
                     array.put(obj);
                 } catch (JSONException ignored) {
                 }
@@ -450,11 +593,13 @@ public class ConfigManager {
                 cfg.isModified = obj.optBoolean("isModified", false);
                 cfg.originalName = obj.has("originalName") ? obj.optString("originalName") : null;
                 cfg.originalSearchUrl = obj.has("originalSearchUrl") ? obj.optString("originalSearchUrl") : null;
-                // 新增字段
                 cfg.hasUpdate = obj.optBoolean("hasUpdate", false);
                 cfg.pendingName = obj.has("pendingName") ? obj.optString("pendingName") : null;
                 cfg.pendingSearchUrl = obj.has("pendingSearchUrl") ? obj.optString("pendingSearchUrl") : null;
                 cfg.isRemovedFromBrowser = obj.optBoolean("isRemovedFromBrowser", false);
+                cfg.hasBuiltinConflict = obj.optBoolean("hasBuiltinConflict", false);
+                cfg.conflictBuiltinName = obj.has("conflictBuiltinName") ? obj.optString("conflictBuiltinName") : null;
+                cfg.conflictBuiltinSearchUrl = obj.has("conflictBuiltinSearchUrl") ? obj.optString("conflictBuiltinSearchUrl") : null;
 
                 if (!cfg.key.isEmpty()) {
                     list.add(cfg);

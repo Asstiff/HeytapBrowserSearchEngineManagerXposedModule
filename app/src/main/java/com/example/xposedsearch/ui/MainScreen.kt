@@ -69,6 +69,7 @@ fun MainScreen(
     val showHideIconDialog = remember { mutableStateOf(uiState.showHideIconConfirmDialog) }
     val showUpdateDialog = remember { mutableStateOf(uiState.updatingEngine != null) }
     val showRemovedDialog = remember { mutableStateOf(uiState.removedEngine != null) }
+    val showConflictDialog = remember { mutableStateOf(uiState.conflictEngine != null) }
 
     LaunchedEffect(uiState.showAddDialog) { showAddDialog.value = uiState.showAddDialog }
     LaunchedEffect(uiState.editingEngine) { showEditDialog.value = uiState.editingEngine != null }
@@ -76,6 +77,7 @@ fun MainScreen(
     LaunchedEffect(uiState.showHideIconConfirmDialog) { showHideIconDialog.value = uiState.showHideIconConfirmDialog }
     LaunchedEffect(uiState.updatingEngine) { showUpdateDialog.value = uiState.updatingEngine != null }
     LaunchedEffect(uiState.removedEngine) { showRemovedDialog.value = uiState.removedEngine != null }
+    LaunchedEffect(uiState.conflictEngine) { showConflictDialog.value = uiState.conflictEngine != null }
 
     // 获取导航条高度
     val navigationBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -181,7 +183,8 @@ fun MainScreen(
                         } else null,
                         onRemoved = if (engine.isRemovedFromBrowser) {
                             { viewModel.showRemovedDialog(engine) }
-                        } else null
+                        } else null,
+                        onConflict = null
                     )
                 }
             }
@@ -200,7 +203,10 @@ fun MainScreen(
                         onDelete = { viewModel.showDeleteDialog(engine) },
                         onReset = null,
                         onUpdate = null,
-                        onRemoved = null
+                        onRemoved = null,
+                        onConflict = if (engine.hasBuiltinConflict()) {
+                            { viewModel.showConflictDialog(engine) }
+                        } else null
                     )
                 }
             }
@@ -229,14 +235,18 @@ fun MainScreen(
             onDismiss = { viewModel.showEditDialog(null) },
             onConfirm = { newKey, name, url ->
                 if (engine.isBuiltin) {
-                    // 内置引擎不能改 key
                     viewModel.updateEngine(engine.key, name, url, engine.enabled)
+                    Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                    viewModel.showEditDialog(null)
                 } else {
-                    // 自定义引擎可以改 key
-                    viewModel.updateCustomEngine(engine.key, newKey, name, url, engine.enabled)
+                    val success = viewModel.updateCustomEngine(engine.key, newKey, name, url, engine.enabled)
+                    if (success) {
+                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
+                        viewModel.showEditDialog(null)
+                    } else {
+                        Toast.makeText(context, "标识符已存在", Toast.LENGTH_SHORT).show()
+                    }
                 }
-                Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
-                viewModel.showEditDialog(null)
             },
             onKeyConflict = {
                 Toast.makeText(context, "标识符已存在", Toast.LENGTH_SHORT).show()
@@ -289,6 +299,29 @@ fun MainScreen(
                 viewModel.deleteEngine(engine.key)
                 Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
                 viewModel.showRemovedDialog(null)
+            }
+        )
+    }
+
+    // 新增：冲突对话框
+    uiState.conflictEngine?.let { engine ->
+        BuiltinConflictDialog(
+            show = showConflictDialog,
+            engine = engine,
+            onDismiss = { viewModel.showConflictDialog(null) },
+            onConvertToBuiltin = {
+                viewModel.convertCustomToBuiltin(engine.key)
+                Toast.makeText(context, "已转为内置引擎", Toast.LENGTH_SHORT).show()
+                viewModel.showConflictDialog(null)
+            },
+            onCreateCopy = {
+                val newKey = viewModel.createCustomEngineCopy(engine.key)
+                if (newKey != null) {
+                    Toast.makeText(context, "已创建副本: $newKey", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "创建副本失败", Toast.LENGTH_SHORT).show()
+                }
+                viewModel.showConflictDialog(null)
             }
         )
     }
@@ -467,7 +500,8 @@ fun EngineItem(
     onDelete: (() -> Unit)?,
     onReset: (() -> Unit)?,
     onUpdate: (() -> Unit)?,
-    onRemoved: (() -> Unit)?
+    onRemoved: (() -> Unit)?,
+    onConflict: (() -> Unit)?
 ) {
     Card(
         modifier = Modifier
@@ -498,6 +532,17 @@ fun EngineItem(
                             imageVector = Icons.Default.Warning,
                             contentDescription = "已从浏览器消失",
                             tint = Color(0xFFF44336)
+                        )
+                    }
+                }
+
+                // 冲突警告按钮（自定义引擎与内置引擎冲突）
+                onConflict?.let {
+                    IconButton(onClick = it) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "与内置引擎冲突",
+                            tint = Color(0xFFFF9800)
                         )
                     }
                 }
@@ -639,6 +684,83 @@ fun EngineRemovedDialog(
                 TextButton(
                     text = "转为自定义",
                     onClick = onConvertToCustom,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.textButtonColorsPrimary()
+                )
+            }
+        }
+    }
+}
+
+// 新增：内置引擎冲突对话框
+@Composable
+fun BuiltinConflictDialog(
+    show: MutableState<Boolean>,
+    engine: SearchEngineConfig,
+    onDismiss: () -> Unit,
+    onConvertToBuiltin: () -> Unit,
+    onCreateCopy: () -> Unit
+) {
+    SuperDialog(
+        title = "发现同名内置引擎",
+        show = show,
+        onDismissRequest = onDismiss
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "浏览器新增了标识符同为「${engine.key}」的内置引擎。",
+                color = MiuixTheme.colorScheme.onSurface
+            )
+
+            Surface(
+                color = MiuixTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "内置引擎信息：",
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    )
+                    if (engine.conflictBuiltinName != null) {
+                        Text(
+                            text = "名称: ${engine.conflictBuiltinName}",
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                        )
+                    }
+                    if (engine.conflictBuiltinSearchUrl != null) {
+                        Text(
+                            text = "URL: ${engine.conflictBuiltinSearchUrl}",
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 2
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text = "你可以选择：\n• 转为内置：保留你的自定义设置，但作为内置引擎的修改版\n• 创建副本：保留自定义引擎并改名，同时添加内置引擎",
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                style = MiuixTheme.textStyles.body2
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                TextButton(
+                    text = "转为内置",
+                    onClick = onConvertToBuiltin,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    text = "创建副本",
+                    onClick = onCreateCopy,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.textButtonColorsPrimary()
                 )

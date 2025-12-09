@@ -48,6 +48,10 @@ public class SearchEngineProvider extends ContentProvider {
     public static final String COL_PENDING_NAME = "pendingName";
     public static final String COL_PENDING_SEARCH_URL = "pendingSearchUrl";
     public static final String COL_IS_REMOVED = "isRemovedFromBrowser";
+    // 新增列
+    public static final String COL_HAS_BUILTIN_CONFLICT = "hasBuiltinConflict";
+    public static final String COL_CONFLICT_BUILTIN_NAME = "conflictBuiltinName";
+    public static final String COL_CONFLICT_BUILTIN_SEARCH_URL = "conflictBuiltinSearchUrl";
 
     // 用于追踪本次发现的引擎
     private Set<String> currentDiscoveredKeys = new HashSet<>();
@@ -90,7 +94,8 @@ public class SearchEngineProvider extends ContentProvider {
         String[] columns = {
                 COL_KEY, COL_NAME, COL_SEARCH_URL, COL_ENABLED,
                 COL_IS_BUILTIN, COL_IS_MODIFIED, COL_ORIGINAL_NAME, COL_ORIGINAL_SEARCH_URL,
-                COL_HAS_UPDATE, COL_PENDING_NAME, COL_PENDING_SEARCH_URL, COL_IS_REMOVED
+                COL_HAS_UPDATE, COL_PENDING_NAME, COL_PENDING_SEARCH_URL, COL_IS_REMOVED,
+                COL_HAS_BUILTIN_CONFLICT, COL_CONFLICT_BUILTIN_NAME, COL_CONFLICT_BUILTIN_SEARCH_URL
         };
         MatrixCursor cursor = new MatrixCursor(columns);
 
@@ -107,7 +112,10 @@ public class SearchEngineProvider extends ContentProvider {
                     cfg.hasUpdate ? 1 : 0,
                     cfg.pendingName != null ? cfg.pendingName : "",
                     cfg.pendingSearchUrl != null ? cfg.pendingSearchUrl : "",
-                    cfg.isRemovedFromBrowser ? 1 : 0
+                    cfg.isRemovedFromBrowser ? 1 : 0,
+                    cfg.hasBuiltinConflict ? 1 : 0,
+                    cfg.conflictBuiltinName != null ? cfg.conflictBuiltinName : "",
+                    cfg.conflictBuiltinSearchUrl != null ? cfg.conflictBuiltinSearchUrl : ""
             });
         }
 
@@ -216,6 +224,26 @@ public class SearchEngineProvider extends ContentProvider {
                     getContext().getContentResolver().notifyChange(uri, null);
                 }
                 return 1;
+            }
+
+            // 转换为内置引擎（处理冲突）
+            Boolean convertToBuiltin = values.getAsBoolean("convertToBuiltin");
+            if (convertToBuiltin != null && convertToBuiltin) {
+                ConfigManager.convertCustomToBuiltin(getContext(), key);
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(uri, null);
+                }
+                return 1;
+            }
+
+            // 创建副本（处理冲突）
+            Boolean createCopy = values.getAsBoolean("createCopy");
+            if (createCopy != null && createCopy) {
+                String newKey = ConfigManager.createCustomEngineCopy(getContext(), key);
+                if (newKey != null && getContext() != null) {
+                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
+                }
+                return newKey != null ? 1 : 0;
             }
 
             String name = values.getAsString("name");

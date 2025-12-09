@@ -27,9 +27,10 @@ data class MainUiState(
     val editingEngine: SearchEngineConfig? = null,
     val deletingEngine: SearchEngineConfig? = null,
     val showHideIconConfirmDialog: Boolean = false,
+    val updatingEngine: SearchEngineConfig? = null,
+    val removedEngine: SearchEngineConfig? = null,
     // 新增状态
-    val updatingEngine: SearchEngineConfig? = null,  // 显示更新对话框
-    val removedEngine: SearchEngineConfig? = null    // 显示已消失对话框
+    val conflictEngine: SearchEngineConfig? = null  // 显示冲突对话框
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -122,13 +123,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshEngines()
     }
 
-    fun updateCustomEngine(oldKey: String, newKey: String, name: String, url: String, enabled: Boolean) {
+    fun updateCustomEngine(oldKey: String, newKey: String, name: String, url: String, enabled: Boolean): Boolean {
         val success = ConfigManager.updateCustomEngineWithKey(context, oldKey, newKey, name, url, enabled)
         if (success) {
-            viewModelScope.launch {
-                refreshEngines()
-            }
+            refreshEngines()
         }
+        return success
     }
 
     fun deleteEngine(key: String): Boolean {
@@ -143,22 +143,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return success
     }
 
-    // 新增方法：应用待更新
     fun applyPendingUpdate(key: String) {
         ConfigManager.applyPendingUpdate(context, key)
         refreshEngines()
     }
 
-    // 新增方法：忽略待更新
     fun ignorePendingUpdate(key: String) {
         ConfigManager.ignorePendingUpdate(context, key)
         refreshEngines()
     }
 
-    // 新增方法：转换为自定义引擎
     fun convertToCustomEngine(key: String) {
         ConfigManager.convertToCustomEngine(context, key)
         refreshEngines()
+    }
+
+    // 新增方法：将自定义引擎转为内置引擎
+    fun convertCustomToBuiltin(key: String) {
+        ConfigManager.convertCustomToBuiltin(context, key)
+        refreshEngines()
+    }
+
+    // 新增方法：创建自定义引擎副本
+    fun createCustomEngineCopy(key: String): String? {
+        val newKey = ConfigManager.createCustomEngineCopy(context, key)
+        if (newKey != null) {
+            refreshEngines()
+        }
+        return newKey
     }
 
     fun showAddDialog(show: Boolean) {
@@ -173,14 +185,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(deletingEngine = engine)
     }
 
-    // 新增方法：显示更新对话框
     fun showUpdateDialog(engine: SearchEngineConfig?) {
         _uiState.value = _uiState.value.copy(updatingEngine = engine)
     }
 
-    // 新增方法：显示已消失对话框
     fun showRemovedDialog(engine: SearchEngineConfig?) {
         _uiState.value = _uiState.value.copy(removedEngine = engine)
+    }
+
+    // 新增方法：显示冲突对话框
+    fun showConflictDialog(engine: SearchEngineConfig?) {
+        _uiState.value = _uiState.value.copy(conflictEngine = engine)
     }
 
     fun openBrowser() {

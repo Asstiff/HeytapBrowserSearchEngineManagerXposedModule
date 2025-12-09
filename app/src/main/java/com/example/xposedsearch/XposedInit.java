@@ -43,6 +43,11 @@ public class XposedInit implements IXposedHookLoadPackage {
 
     private Map<String, Object> customEngineProxies = new HashMap<>();
 
+    // 缓存浏览器原始 label（在 hook 修改之前）
+    private Map<String, String> originalLabels = new HashMap<>();
+    // 缓存浏览器原始 searchUrl
+    private Map<String, String> originalSearchUrls = new HashMap<>();
+
     private static class EngineConfig {
         String key;
         String name;
@@ -50,14 +55,17 @@ public class XposedInit implements IXposedHookLoadPackage {
         boolean enabled;
         boolean isBuiltin;
         boolean isRemovedFromBrowser;
+        boolean hasBuiltinConflict;
 
-        EngineConfig(String key, String name, String searchUrl, boolean enabled, boolean isBuiltin, boolean isRemovedFromBrowser) {
+        EngineConfig(String key, String name, String searchUrl, boolean enabled,
+                     boolean isBuiltin, boolean isRemovedFromBrowser, boolean hasBuiltinConflict) {
             this.key = key;
             this.name = name;
             this.searchUrl = searchUrl;
             this.enabled = enabled;
             this.isBuiltin = isBuiltin;
             this.isRemovedFromBrowser = isRemovedFromBrowser;
+            this.hasBuiltinConflict = hasBuiltinConflict;
         }
     }
 
@@ -252,7 +260,6 @@ public class XposedInit implements IXposedHookLoadPackage {
                         if (requestedKey != null) {
                             refreshConfig();
                             EngineConfig config = engineConfigs.get(requestedKey);
-                            // 为自定义引擎或已消失但仍启用的内置引擎创建代理
                             if (config != null && config.enabled &&
                                     (!config.isBuiltin || config.isRemovedFromBrowser)) {
                                 Object customEngine = getOrCreateCustomEngineProxy(config);
@@ -288,8 +295,21 @@ public class XposedInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * 通知 Provider 发现完成
+     * 检查对象是否是我们创建的 proxy
      */
+    private boolean isProxy(Object obj) {
+        if (obj == null) return false;
+        // 检查是否是 Java Proxy
+        if (Proxy.isProxyClass(obj.getClass())) {
+            return true;
+        }
+        // 检查是否是浏览器的内置引擎实现类
+        if (searchEngineImplClass != null) {
+            return !searchEngineImplClass.isInstance(obj);
+        }
+        return false;
+    }
+
     private void notifyDiscoverComplete() {
         if (appContext == null) return;
         try {
@@ -301,13 +321,9 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 创建额外的引擎列表（自定义引擎 + 已消失但仍启用的内置引擎）
-     */
     private List<Object> createAdditionalEngines(List<Object> existingEngines) {
         List<Object> additionalEngines = new ArrayList<>();
 
-        // 收集已存在的所有 key
         Set<String> existingKeys = new HashSet<>();
         for (Object engine : existingEngines) {
             String key = getKey(engine);
@@ -317,17 +333,14 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
 
         for (EngineConfig config : engineConfigs.values()) {
-            // 跳过已存在的
             if (existingKeys.contains(config.key)) {
                 continue;
             }
 
-            // 必须启用且有搜索 URL
             if (!config.enabled || config.searchUrl == null || config.searchUrl.isEmpty()) {
                 continue;
             }
 
-            // 自定义引擎或已消失的内置引擎
             if (!config.isBuiltin || config.isRemovedFromBrowser) {
                 Object proxy = getOrCreateCustomEngineProxy(config);
                 if (proxy != null) {
@@ -382,12 +395,19 @@ public class XposedInit implements IXposedHookLoadPackage {
                     String key = getKey(param.thisObject);
                     if (key == null) return;
 
+                    // 获取浏览器原始返回值（在我们修改之前）
+                    String originalLabel = (String) param.getResult();
+
+                    // 始终缓存原始 label
+                    if (originalLabel != null) {
+                        originalLabels.put(key, originalLabel);
+                    }
+
                     EngineConfig config = engineConfigs.get(key);
                     if (config != null && config.name != null && !config.name.isEmpty()) {
-                        String original = (String) param.getResult();
-                        if (!config.name.equals(original)) {
+                        if (!config.name.equals(originalLabel)) {
                             param.setResult(config.name);
-                            XposedBridge.log("XposedSearch: getLabel " + key + ": " + original + " -> " + config.name);
+                            XposedBridge.log("XposedSearch: getLabel " + key + ": " + originalLabel + " -> " + config.name);
                         }
                     }
                 }
@@ -395,6 +415,25 @@ public class XposedInit implements IXposedHookLoadPackage {
             XposedBridge.log("XposedSearch: hooked getLabel()");
         } catch (Throwable t) {
             XposedBridge.log("XposedSearch: failed to hook getLabel: " + t.getMessage());
+        }
+
+        // Hook v() 方法获取原始 searchUrl
+        try {
+            XposedHelpers.findAndHookMethod(clazz, "v", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    String key = getKey(param.thisObject);
+                    if (key == null) return;
+
+                    String originalUrl = (String) param.getResult();
+                    if (originalUrl != null && !originalUrl.isEmpty()) {
+                        originalSearchUrls.put(key, originalUrl);
+                    }
+                }
+            });
+            XposedBridge.log("XposedSearch: hooked v() for original URL");
+        } catch (Throwable t) {
+            XposedBridge.log("XposedSearch: failed to hook v: " + t.getMessage());
         }
 
         try {
@@ -558,9 +597,16 @@ public class XposedInit implements IXposedHookLoadPackage {
 
     /**
      * 上报发现的引擎
+     * 【关键修复】只报告真正的内置引擎，跳过我们创建的 proxy
      */
     private void reportDiscoveredEngine(Object engine) {
         if (appContext == null || engine == null) return;
+
+        // 【关键修复】跳过 proxy，只报告浏览器的原生引擎
+        if (isProxy(engine)) {
+            XposedBridge.log("XposedSearch: skipping proxy in reportDiscoveredEngine");
+            return;
+        }
 
         String key = getKey(engine);
         if (key == null) return;
@@ -572,8 +618,21 @@ public class XposedInit implements IXposedHookLoadPackage {
             return;
         }
 
-        String label = getLabel(engine);
-        String searchUrl = getSearchUrl(engine);
+        // 触发 hook 缓存原始值
+        getLabel(engine);
+        getSearchUrl(engine);
+
+        // 从缓存获取原始值
+        String label = originalLabels.get(key);
+        String searchUrl = originalSearchUrls.get(key);
+
+        // 如果缓存没有，用当前值（但这不应该发生）
+        if (label == null) {
+            label = getLabel(engine);
+        }
+        if (searchUrl == null) {
+            searchUrl = getSearchUrl(engine);
+        }
 
         try {
             ContentResolver resolver = appContext.getContentResolver();
@@ -589,7 +648,7 @@ public class XposedInit implements IXposedHookLoadPackage {
 
             String urlPreview = searchUrl != null ?
                     searchUrl.substring(0, Math.min(50, searchUrl.length())) + "..." : "null";
-            XposedBridge.log("XposedSearch: reported engine: " + key + " (" + label + ") url=" + urlPreview);
+            XposedBridge.log("XposedSearch: reported engine (original): " + key + " (" + label + ") url=" + urlPreview);
         } catch (Throwable t) {
             XposedBridge.log("XposedSearch: failed to report engine: " + t.getMessage());
         }
@@ -661,8 +720,10 @@ public class XposedInit implements IXposedHookLoadPackage {
                         boolean enabled = cursor.getInt(cursor.getColumnIndexOrThrow("enabled")) == 1;
                         boolean isBuiltin = cursor.getInt(cursor.getColumnIndexOrThrow("isBuiltin")) == 1;
                         boolean isRemoved = cursor.getInt(cursor.getColumnIndexOrThrow("isRemovedFromBrowser")) == 1;
+                        boolean hasConflict = cursor.getInt(cursor.getColumnIndexOrThrow("hasBuiltinConflict")) == 1;
 
-                        engineConfigs.put(key, new EngineConfig(key, name, searchUrl, enabled, isBuiltin, isRemoved));
+                        engineConfigs.put(key, new EngineConfig(key, name, searchUrl, enabled,
+                                isBuiltin, isRemoved, hasConflict));
                     }
 
                     // 清理不再存在的代理
