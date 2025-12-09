@@ -2,6 +2,6 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.heytap.browser</item>
-        <item>com.example.xposedsearch</item>
+        <item>com.upuaut.xposedsearch</item>
     </string-array>
 </resources>
