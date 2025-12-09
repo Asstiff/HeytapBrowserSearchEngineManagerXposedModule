@@ -8,6 +8,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -20,11 +21,25 @@ public class ConfigManager {
 
     // ------------------------- 读写配置 -------------------------
 
+    /**
+     * 加载搜索引擎配置
+     * 
+     * 优先从浏览器数据目录读取（通过 root），这是 hook 使用的主要数据源
+     * 如果失败则从本地 SharedPreferences 读取（备用）
+     */
     public static List<SearchEngineConfig> loadEngines(Context context) {
         if (context == null) {
             return new ArrayList<>();
         }
 
+        // 尝试从浏览器数据目录读取（主要数据源）
+        List<SearchEngineConfig> browserConfigs = loadFromBrowserDataDir();
+        if (browserConfigs != null && !browserConfigs.isEmpty()) {
+            Log.d(TAG, "[APP] loadEngines from browser data dir, size=" + browserConfigs.size());
+            return browserConfigs;
+        }
+
+        // 回退到本地 SharedPreferences
         SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         String json = sp.getString(KEY_ENGINES, null);
 
@@ -34,10 +49,33 @@ public class ConfigManager {
         }
 
         List<SearchEngineConfig> list = fromJson(json);
-        Log.d(TAG, "[APP] loadEngines size=" + list.size());
+        Log.d(TAG, "[APP] loadEngines from local prefs, size=" + list.size());
         return list;
     }
 
+    /**
+     * 从浏览器数据目录加载配置（通过 root）
+     */
+    private static List<SearchEngineConfig> loadFromBrowserDataDir() {
+        try {
+            if (!RootUtils.checkRootAccess()) {
+                Log.d(TAG, "[APP] No root access, skip loading from browser data dir");
+                return null;
+            }
+            return BrowserConfigManager.loadConfigWithRoot();
+        } catch (Exception e) {
+            Log.e(TAG, "[APP] Error loading from browser data dir: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 保存搜索引擎配置
+     * 
+     * 同时保存到:
+     * 1. 本地 SharedPreferences（备份）
+     * 2. 浏览器数据目录（主要，通过 root 写入，供 hook 直接读取）
+     */
     public static void saveEngines(Context context, List<SearchEngineConfig> list) {
         if (context == null) return;
         if (list == null) list = new ArrayList<>();
@@ -45,8 +83,126 @@ public class ConfigManager {
         String json = toJson(list);
         Log.d(TAG, "[APP] saveEngines size=" + list.size());
 
+        // 保存到本地 SharedPreferences（作为备份）
         SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
-        sp.edit().putString(KEY_ENGINES, json).apply();
+        sp.edit().putString(KEY_ENGINES, json).commit();
+
+        // 设置文件为 world-readable（XSharedPreferences 备用方案）
+        makePrefsWorldReadable(context);
+        
+        // 同步到浏览器数据目录（主要方案，hook 直接读取）
+        syncToBrowserDataDir(list);
+    }
+
+    /**
+     * 同步配置到浏览器数据目录
+     * 使用 root 权限写入，供 hook 直接读取
+     */
+    private static void syncToBrowserDataDir(List<SearchEngineConfig> list) {
+        try {
+            boolean success = BrowserConfigManager.saveConfigWithRoot(list);
+            if (success) {
+                Log.d(TAG, "[APP] Synced config to browser data dir");
+            } else {
+                Log.w(TAG, "[APP] Failed to sync config to browser data dir");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[APP] Error syncing to browser data dir: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 将 SharedPreferences 文件及其父目录设置为 world-readable
+     * 这是 Xposed 模块跨进程读取配置的标准做法
+     * 
+     * 需要设置:
+     * 1. shared_prefs 目录需要 world-executable (r-x) 以便其他进程可以遍历进入
+     * 2. prefs 文件需要 world-readable (r--) 以便其他进程可以读取
+     */
+    private static void makePrefsWorldReadable(Context context) {
+        try {
+            File dataDir = new File(context.getApplicationInfo().dataDir);
+            File prefsDir = new File(dataDir, "shared_prefs");
+            File prefsFile = new File(prefsDir, PREF_NAME + ".xml");
+            
+            // 设置 data 目录可执行（让其他进程可以进入）
+            boolean dataDirSuccess = dataDir.setExecutable(true, false);
+            Log.d(TAG, "[APP] Set data dir executable: " + dataDirSuccess);
+            
+            // 设置 shared_prefs 目录可执行（让其他进程可以进入）
+            if (prefsDir.exists()) {
+                boolean prefsDirSuccess = prefsDir.setExecutable(true, false);
+                Log.d(TAG, "[APP] Set prefs dir executable: " + prefsDirSuccess);
+            }
+            
+            // 设置配置文件可读
+            if (prefsFile.exists()) {
+                boolean prefsFileSuccess = prefsFile.setReadable(true, false);
+                if (prefsFileSuccess) {
+                    Log.d(TAG, "[APP] Set prefs file world-readable: " + prefsFile.getAbsolutePath());
+                } else {
+                    Log.w(TAG, "[APP] Failed to set prefs file world-readable");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[APP] Error making prefs world-readable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 初始化配置管理器
+     * 确保配置文件存在且可被 Xposed hook 读取
+     * 应在应用启动时调用
+     */
+    public static void init(Context context) {
+        if (context == null) return;
+        
+        // 确保 SharedPreferences 文件存在
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        
+        // 如果文件为空，写入空列表以创建文件
+        if (!sp.contains(KEY_ENGINES)) {
+            sp.edit().putString(KEY_ENGINES, toJson(new ArrayList<>())).commit();
+        }
+        
+        // 设置文件为 world-readable（XSharedPreferences 备用方案）
+        makePrefsWorldReadable(context);
+        
+        // 如果本地有配置但浏览器数据目录没有，同步过去
+        syncLocalToBrowserIfNeeded(context);
+        
+        Log.d(TAG, "[APP] ConfigManager initialized");
+    }
+
+    /**
+     * 如果本地有配置但浏览器数据目录没有，同步过去
+     */
+    private static void syncLocalToBrowserIfNeeded(Context context) {
+        try {
+            if (!RootUtils.checkRootAccess()) {
+                Log.d(TAG, "[APP] No root access, skip sync");
+                return;
+            }
+            
+            // 检查浏览器数据目录是否有配置
+            if (BrowserConfigManager.configExistsWithRoot()) {
+                Log.d(TAG, "[APP] Browser config exists, no need to sync");
+                return;
+            }
+            
+            // 本地有配置，同步到浏览器
+            SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+            String json = sp.getString(KEY_ENGINES, null);
+            if (json != null && !json.isEmpty()) {
+                List<SearchEngineConfig> list = fromJson(json);
+                if (!list.isEmpty()) {
+                    BrowserConfigManager.saveConfigWithRoot(list);
+                    Log.d(TAG, "[APP] Synced local config to browser data dir");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[APP] Error syncing to browser: " + e.getMessage());
+        }
     }
 
     // ------------------------- 引擎发现与同步 -------------------------

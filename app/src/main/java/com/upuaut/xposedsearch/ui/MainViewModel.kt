@@ -45,6 +45,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val context get() = getApplication<Application>()
 
     init {
+        // 初始化配置管理器，确保配置文件可被 Xposed hook 读取
+        ConfigManager.init(context)
         refreshAll()
     }
 
