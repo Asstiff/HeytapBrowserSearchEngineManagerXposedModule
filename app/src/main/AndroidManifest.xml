@@ -14,22 +14,39 @@
         android:theme="@style/Theme.HeytapEngineManager"
         android:usesCleartextTraffic="true">
 
-        <!-- ContentProvider - 关键：exported=true 允许其他应用访问 -->
+        <!-- ContentProvider -->
         <provider
             android:name=".SearchEngineProvider"
             android:authorities="com.example.xposedsearch.engines"
             android:exported="true"
             android:grantUriPermissions="true" />
 
+        <!-- 真正的 MainActivity（无 launcher intent，用于 LSPosed 和内部跳转） -->
         <activity
             android:name=".MainActivity"
+            android:exported="true">
+            <!-- 供 LSPosed 调用的 action -->
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- 桌面图标入口（activity-alias，可以被禁用） -->
+        <activity-alias
+            android:name=".MainActivityAlias"
+            android:targetActivity=".MainActivity"
+            android:label="@string/app_name"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
+        <!-- Xposed 模块标记 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />

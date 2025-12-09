@@ -1,251 +1,211 @@
 package com.example.xposedsearch;
 
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.net.Uri;
 import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.List;
 
-import de.robv.android.xposed.XSharedPreferences;
-import de.robv.android.xposed.XposedBridge;
-
-/**
- * 配置管理：
- * - App 端：保存到 SharedPreferences
- * - Xposed 端：优先通过 ContentProvider 读取，失败则用默认值
- */
 public class ConfigManager {
 
     private static final String TAG = "XposedSearch";
-
     public static final String PREF_NAME = "xposed_search_engines";
     private static final String KEY_ENGINES = "engines";
 
-    private static final String MODULE_PACKAGE = "com.example.xposedsearch";
-    private static final String AUTHORITY = "com.example.xposedsearch.engines";
-    private static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/engines");
+    // ------------------------- 读写配置 -------------------------
 
-    // ------------------------- App 侧：读写配置 -------------------------
-
-    /**
-     * App 内读取配置（UI 用）
-     */
     public static List<SearchEngineConfig> loadEngines(Context context) {
         if (context == null) {
-            return getDefaultEngines();
+            return new ArrayList<>();
         }
 
         SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         String json = sp.getString(KEY_ENGINES, null);
 
         if (json == null || json.isEmpty()) {
-            Log.d(TAG, "[APP] loadEngines json=null, use default");
-            return getDefaultEngines();
+            Log.d(TAG, "[APP] loadEngines json=null, return empty");
+            return new ArrayList<>();
         }
 
         List<SearchEngineConfig> list = fromJson(json);
-        if (list == null || list.isEmpty()) {
-            Log.d(TAG, "[APP] loadEngines parse empty, use default");
-            return getDefaultEngines();
-        }
-
         Log.d(TAG, "[APP] loadEngines size=" + list.size());
         return list;
     }
 
-    /**
-     * App 内保存配置
-     */
     public static void saveEngines(Context context, List<SearchEngineConfig> list) {
-        if (context == null) {
-            return;
-        }
-        if (list == null) {
-            list = new ArrayList<>();
-        }
+        if (context == null) return;
+        if (list == null) list = new ArrayList<>();
 
         String json = toJson(list);
-        Log.d(TAG, "[APP] saveEngines json length=" + json.length());
+        Log.d(TAG, "[APP] saveEngines size=" + list.size());
 
         SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
-        boolean ok = sp.edit().putString(KEY_ENGINES, json).commit();
-        Log.d(TAG, "[APP] save ok=" + ok);
+        sp.edit().putString(KEY_ENGINES, json).apply();
     }
 
-    // ------------------------- Xposed 侧：读取配置 -------------------------
+    // ------------------------- 引擎发现与同步 -------------------------
 
     /**
-     * Xposed 侧通过 ContentProvider 读取配置
-     * @param context 浏览器的 Context
+     * 处理从浏览器发现的引擎
+     * @return true 表示有更新，false 表示无变化
      */
-    public static List<SearchEngineConfig> loadEnginesViaProvider(Context context) {
-        if (context == null) {
-            XposedBridge.log("XposedSearch: [Provider] context is null, using defaults");
-            return getDefaultEngines();
-        }
+    public static boolean handleDiscoveredEngine(Context context, String key, String name, String searchUrl) {
+        if (context == null || key == null || key.isEmpty()) return false;
 
-        List<SearchEngineConfig> list = new ArrayList<>();
-        Cursor cursor = null;
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig existing = findByKey(engines, key);
 
-        try {
-            ContentResolver resolver = context.getContentResolver();
-            cursor = resolver.query(CONTENT_URI, null, null, null, null);
+        if (existing == null) {
+            // 新引擎，添加为内置引擎
+            SearchEngineConfig newEngine = new SearchEngineConfig();
+            newEngine.key = key;
+            newEngine.name = name != null ? name : key;
+            newEngine.searchUrl = searchUrl != null ? searchUrl : "";
+            newEngine.enabled = true;  // 默认启用
+            newEngine.isBuiltin = true;
+            newEngine.isModified = false;
+            newEngine.originalName = newEngine.name;
+            newEngine.originalSearchUrl = newEngine.searchUrl;
 
-            if (cursor == null) {
-                XposedBridge.log("XposedSearch: [Provider] cursor is null");
-                return getDefaultEngines();
+            engines.add(newEngine);
+            saveEngines(context, engines);
+            Log.d(TAG, "[APP] discovered new engine: " + key + " (" + name + ")");
+            return true;
+
+        } else if (existing.isBuiltin && !existing.isModified) {
+            // 已存在的内置引擎，用户未修改过，检查是否需要更新
+            boolean needUpdate = false;
+
+            if (name != null && !name.equals(existing.originalName)) {
+                needUpdate = true;
+            }
+            if (searchUrl != null && !searchUrl.isEmpty() && !searchUrl.equals(existing.originalSearchUrl)) {
+                needUpdate = true;
             }
 
-            int keyIdx = cursor.getColumnIndex("key");
-            int nameIdx = cursor.getColumnIndex("name");
-            int urlIdx = cursor.getColumnIndex("searchUrl");
-            int enabledIdx = cursor.getColumnIndex("enabled");
-
-            while (cursor.moveToNext()) {
-                SearchEngineConfig cfg = new SearchEngineConfig();
-                cfg.key = cursor.getString(keyIdx);
-                cfg.name = cursor.getString(nameIdx);
-                cfg.searchUrl = cursor.getString(urlIdx);
-                cfg.enabled = cursor.getInt(enabledIdx) == 1;
-                list.add(cfg);
-            }
-
-            XposedBridge.log("XposedSearch: [Provider] loaded " + list.size() + " engines");
-
-        } catch (Throwable t) {
-            XposedBridge.log("XposedSearch: [Provider] query failed: " + t.getMessage());
-        } finally {
-            if (cursor != null) {
-                try {
-                    cursor.close();
-                } catch (Throwable ignored) {
-                }
+            if (needUpdate) {
+                existing.name = name != null ? name : existing.name;
+                existing.searchUrl = (searchUrl != null && !searchUrl.isEmpty()) ? searchUrl : existing.searchUrl;
+                existing.originalName = existing.name;
+                existing.originalSearchUrl = existing.searchUrl;
+                saveEngines(context, engines);
+                Log.d(TAG, "[APP] updated engine from browser: " + key);
+                return true;
             }
         }
-
-        if (list.isEmpty()) {
-            XposedBridge.log("XposedSearch: [Provider] empty result, using defaults");
-            return getDefaultEngines();
-        }
-
-        return list;
+        // 用户已修改过，不更新
+        return false;
     }
 
     /**
-     * Xposed 侧读取配置（无 Context 版本，尝试多种方式）
+     * 恢复引擎为默认设置
      */
-    public static List<SearchEngineConfig> loadEnginesForXposed() {
-        String json = null;
+    public static boolean resetEngine(Context context, String key) {
+        if (context == null || key == null) return false;
 
-        // 方式1：使用 XSharedPreferences
-        try {
-            XSharedPreferences xp = new XSharedPreferences(MODULE_PACKAGE, PREF_NAME);
-            xp.makeWorldReadable();
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
 
-            File file = xp.getFile();
-            if (file != null && file.exists() && file.canRead()) {
-                json = xp.getString(KEY_ENGINES, null);
-                XposedBridge.log("XposedSearch: [XSP] read success, json len=" +
-                        (json == null ? 0 : json.length()));
-            } else {
-                XposedBridge.log("XposedSearch: [XSP] file not readable");
-            }
-        } catch (Throwable t) {
-            XposedBridge.log("XposedSearch: [XSP] error: " + t.getMessage());
-        }
+        if (engine == null || !engine.canReset()) return false;
 
-        // 方式2：直接读取文件
-        if (json == null || json.isEmpty()) {
-            json = readPrefsFileDirectly();
-        }
+        engine.name = engine.originalName != null ? engine.originalName : engine.name;
+        engine.searchUrl = engine.originalSearchUrl != null ? engine.originalSearchUrl : engine.searchUrl;
+        engine.enabled = true;
+        engine.isModified = false;
 
-        // 解析 JSON
-        if (json != null && !json.isEmpty()) {
-            List<SearchEngineConfig> list = fromJson(json);
-            if (list != null && !list.isEmpty()) {
-                XposedBridge.log("XposedSearch: loaded " + list.size() + " engines from file");
-                return list;
-            }
-        }
-
-        // 返回默认配置
-        XposedBridge.log("XposedSearch: file methods failed, using defaults");
-        return getDefaultEngines();
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] reset engine: " + key);
+        return true;
     }
 
     /**
-     * 直接读取 SharedPreferences XML 文件
+     * 用户修改引擎（标记为已修改）
      */
-    private static String readPrefsFileDirectly() {
-        String[] paths = {
-                "/data/data/" + MODULE_PACKAGE + "/shared_prefs/" + PREF_NAME + ".xml",
-                "/data/user/0/" + MODULE_PACKAGE + "/shared_prefs/" + PREF_NAME + ".xml",
-                "/data/user_de/0/" + MODULE_PACKAGE + "/shared_prefs/" + PREF_NAME + ".xml"
-        };
+    public static void updateEngineByUser(Context context, String key, String name, String searchUrl, boolean enabled) {
+        if (context == null || key == null) return;
 
-        for (String path : paths) {
-            try {
-                File file = new File(path);
-                if (!file.exists()) {
-                    continue;
-                }
-                if (!file.canRead()) {
-                    XposedBridge.log("XposedSearch: [file] exists but cannot read: " + path);
-                    continue;
-                }
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
 
-                StringBuilder sb = new StringBuilder();
-                BufferedReader reader = new BufferedReader(new FileReader(file));
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-                reader.close();
-                String content = sb.toString();
+        if (engine == null) return;
 
-                String searchKey = "name=\"" + KEY_ENGINES + "\"";
-                int keyIndex = content.indexOf(searchKey);
-                if (keyIndex == -1) {
-                    continue;
-                }
+        engine.name = name;
+        engine.searchUrl = searchUrl;
+        engine.enabled = enabled;
+        engine.isModified = true;
 
-                int startTag = content.indexOf(">", keyIndex);
-                if (startTag == -1) continue;
-                startTag++;
-
-                int endTag = content.indexOf("</string>", startTag);
-                if (endTag == -1) continue;
-
-                String json = content.substring(startTag, endTag);
-                json = json.replace("&quot;", "\"")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&apos;", "'")
-                        .replace("&amp;", "&");
-
-                XposedBridge.log("XposedSearch: [file] read success from " + path);
-                return json;
-
-            } catch (Throwable t) {
-                XposedBridge.log("XposedSearch: [file] read error: " + t.getMessage());
-            }
-        }
-
-        return null;
+        saveEngines(context, engines);
     }
 
-    // ------------------------- 公共工具方法 -------------------------
+    /**
+     * 仅更新启用状态
+     */
+    public static void updateEngineEnabled(Context context, String key, boolean enabled) {
+        if (context == null || key == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null) return;
+
+        engine.enabled = enabled;
+        saveEngines(context, engines);
+    }
+
+    /**
+     * 添加用户自定义引擎
+     */
+    public static boolean addCustomEngine(Context context, String key, String name, String searchUrl) {
+        if (context == null || key == null || key.isEmpty()) return false;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+
+        // 检查 key 是否已存在
+        if (findByKey(engines, key) != null) {
+            return false;
+        }
+
+        SearchEngineConfig newEngine = new SearchEngineConfig();
+        newEngine.key = key;
+        newEngine.name = name;
+        newEngine.searchUrl = searchUrl;
+        newEngine.enabled = true;
+        newEngine.isBuiltin = false;
+        newEngine.isModified = false;
+        newEngine.originalName = null;
+        newEngine.originalSearchUrl = null;
+
+        engines.add(newEngine);
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] added custom engine: " + key);
+        return true;
+    }
+
+    /**
+     * 删除引擎（只能删除用户自定义引擎）
+     */
+    public static boolean deleteEngine(Context context, String key) {
+        if (context == null || key == null) return false;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || !engine.canDelete()) {
+            return false;
+        }
+
+        engines.remove(engine);
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] deleted engine: " + key);
+        return true;
+    }
+
+    // ------------------------- 工具方法 -------------------------
 
     public static SearchEngineConfig findByKey(List<SearchEngineConfig> list, String key) {
         if (list == null || key == null) return null;
@@ -268,6 +228,14 @@ public class ConfigManager {
                     obj.put("name", cfg.name);
                     obj.put("searchUrl", cfg.searchUrl);
                     obj.put("enabled", cfg.enabled);
+                    obj.put("isBuiltin", cfg.isBuiltin);
+                    obj.put("isModified", cfg.isModified);
+                    if (cfg.originalName != null) {
+                        obj.put("originalName", cfg.originalName);
+                    }
+                    if (cfg.originalSearchUrl != null) {
+                        obj.put("originalSearchUrl", cfg.originalSearchUrl);
+                    }
                     array.put(obj);
                 } catch (JSONException ignored) {
                 }
@@ -286,55 +254,23 @@ public class ConfigManager {
             for (int i = 0; i < array.length(); i++) {
                 JSONObject obj = array.optJSONObject(i);
                 if (obj == null) continue;
+
                 SearchEngineConfig cfg = new SearchEngineConfig();
                 cfg.key = obj.optString("key", "");
                 cfg.name = obj.optString("name", "");
                 cfg.searchUrl = obj.optString("searchUrl", "");
                 cfg.enabled = obj.optBoolean("enabled", true);
+                cfg.isBuiltin = obj.optBoolean("isBuiltin", false);
+                cfg.isModified = obj.optBoolean("isModified", false);
+                cfg.originalName = obj.has("originalName") ? obj.optString("originalName") : null;
+                cfg.originalSearchUrl = obj.has("originalSearchUrl") ? obj.optString("originalSearchUrl") : null;
+
                 if (!cfg.key.isEmpty()) {
                     list.add(cfg);
                 }
             }
         } catch (JSONException ignored) {
         }
-        return list;
-    }
-
-    /**
-     * 默认配置 - 包含内置引擎和自定义引擎
-     */
-    public static List<SearchEngineConfig> getDefaultEngines() {
-        List<SearchEngineConfig> list = new ArrayList<>();
-
-        // 内置引擎（浏览器自带的）
-        list.add(new SearchEngineConfig(
-                "baidu", "百度",
-                "", // 内置引擎不需要 URL
-                true
-        ));
-        list.add(new SearchEngineConfig(
-                "shenma", "神马",
-                "",
-                false // 默认禁用
-        ));
-        list.add(new SearchEngineConfig(
-                "sogou", "搜狗",
-                "",
-                false // 默认禁用
-        ));
-
-        // 自定义引擎（需要 URL）
-        list.add(new SearchEngineConfig(
-                "bing", "必应",
-                "https://cn.bing.com/search?q={searchTerms}",
-                true
-        ));
-        list.add(new SearchEngineConfig(
-                "google", "Google",
-                "https://www.google.com/search?q={searchTerms}",
-                false
-        ));
-
         return list;
     }
 }
