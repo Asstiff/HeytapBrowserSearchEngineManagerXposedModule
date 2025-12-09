@@ -287,8 +287,11 @@ public class MainActivity extends AppCompatActivity {
         EditText editUrl = dialogView.findViewById(R.id.editUrl);
         TextView originalInfo = dialogView.findViewById(R.id.originalInfo);
 
+        final String originalKey = engine.key;
+
         editKey.setText(engine.key);
-        editKey.setEnabled(false);
+        // 修复：只有内置引擎才锁定 key，自定义引擎可以修改
+        editKey.setEnabled(!engine.isBuiltin);
         editName.setText(engine.name);
         editUrl.setText(engine.searchUrl);
 
@@ -302,21 +305,56 @@ public class MainActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("编辑搜索引擎")
                 .setView(dialogView)
-                .setPositiveButton("保存", (dialog, which) -> {
-                    String newName = editName.getText().toString().trim();
-                    String newUrl = editUrl.getText().toString().trim();
+                .setPositiveButton("保存", null) // 先设为 null，后面手动处理
+                .setNegativeButton("取消", null)
+                .create()
+                .show();
 
-                    if (newName.isEmpty()) {
-                        Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show();
+        // 使用 AlertDialog.Builder 创建后获取 dialog 来处理验证
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("编辑搜索引擎")
+                .setView(dialogView)
+                .setPositiveButton("保存", null)
+                .setNegativeButton("取消", null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String newKey = editKey.getText().toString().trim();
+                String newName = editName.getText().toString().trim();
+                String newUrl = editUrl.getText().toString().trim();
+
+                if (newKey.isEmpty()) {
+                    editKey.setError("标识符不能为空");
+                    return;
+                }
+                if (newName.isEmpty()) {
+                    editName.setError("名称不能为空");
+                    return;
+                }
+
+                // 如果是自定义引擎且 key 改变了，检查新 key 是否已存在
+                if (!engine.isBuiltin && !newKey.equals(originalKey)) {
+                    List<SearchEngineConfig> engines = ConfigManager.loadEngines(this);
+                    if (ConfigManager.findByKey(engines, newKey) != null) {
+                        editKey.setError("标识符已存在");
                         return;
                     }
-
+                    // 自定义引擎修改 key：删除旧的，添加新的
+                    ConfigManager.deleteEngine(this, originalKey);
+                    ConfigManager.addCustomEngine(this, newKey, newName, newUrl);
+                } else {
+                    // 内置引擎或 key 未改变：正常更新
                     ConfigManager.updateEngineByUser(this, engine.key, newName, newUrl, engine.enabled);
-                    refreshList();
-                    Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
-                })
-                .setNegativeButton("取消", null)
-                .show();
+                }
+
+                refreshList();
+                Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
+                dialog.dismiss();
+            });
+        });
+
+        dialog.show();
     }
 
     private void showAddDialog() {
@@ -332,41 +370,48 @@ public class MainActivity extends AppCompatActivity {
         editUrl.setHint("搜索URL (如: https://google.com/search?q=%s)");
         originalInfo.setVisibility(View.GONE);
 
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("添加自定义搜索引擎")
                 .setView(dialogView)
-                .setPositiveButton("添加", (dialog, which) -> {
-                    String key = editKey.getText().toString().trim();
-                    String name = editName.getText().toString().trim();
-                    String url = editUrl.getText().toString().trim();
-
-                    if (key.isEmpty()) {
-                        Toast.makeText(this, "标识符不能为空", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (name.isEmpty()) {
-                        Toast.makeText(this, "名称不能为空", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (url.isEmpty()) {
-                        Toast.makeText(this, "URL不能为空", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (!url.contains("%s") && !url.contains("{searchTerms}")) {
-                        Toast.makeText(this, "URL必须包含 %s 或 {searchTerms} 作为搜索词占位符", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-
-                    boolean success = ConfigManager.addCustomEngine(this, key, name, url);
-                    if (success) {
-                        refreshList();
-                        Toast.makeText(this, "已添加", Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(this, "标识符已存在", Toast.LENGTH_SHORT).show();
-                    }
-                })
+                .setPositiveButton("添加", null)
                 .setNegativeButton("取消", null)
-                .show();
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String key = editKey.getText().toString().trim();
+                String name = editName.getText().toString().trim();
+                String url = editUrl.getText().toString().trim();
+
+                if (key.isEmpty()) {
+                    editKey.setError("标识符不能为空");
+                    return;
+                }
+                if (name.isEmpty()) {
+                    editName.setError("名称不能为空");
+                    return;
+                }
+                if (url.isEmpty()) {
+                    editUrl.setError("URL不能为空");
+                    return;
+                }
+                if (!url.contains("%s") && !url.contains("{searchTerms}")) {
+                    editUrl.setError("URL必须包含 %s 或 {searchTerms} 作为搜索词占位符");
+                    return;
+                }
+
+                boolean success = ConfigManager.addCustomEngine(this, key, name, url);
+                if (success) {
+                    refreshList();
+                    Toast.makeText(this, "已添加", Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                } else {
+                    editKey.setError("标识符已存在");
+                }
+            });
+        });
+
+        dialog.show();
     }
 
     private void showDeleteConfirmDialog(SearchEngineConfig engine) {
@@ -515,7 +560,8 @@ public class MainActivity extends AppCompatActivity {
                     btnDelete.setOnClickListener(v -> showDeleteConfirmDialog(engine));
                 }
 
-                modifiedBadge.setVisibility(engine.isModified ? View.VISIBLE : View.GONE);
+                // 修复：只有内置引擎才显示"已修改"标签，自定义引擎永不显示
+                modifiedBadge.setVisibility(engine.isBuiltin && engine.isModified ? View.VISIBLE : View.GONE);
             }
         }
     }

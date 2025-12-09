@@ -21,14 +21,14 @@
             android:exported="true"
             android:grantUriPermissions="true" />
 
-        <!-- 真正的 MainActivity（无 launcher intent，用于 LSPosed 和内部跳转） -->
+        <!-- 真正的 MainActivity -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
-            <!-- 供 LSPosed 调用的 action -->
+            <!-- LSPosed 模块设置入口 - 使用 Xposed 专用 category -->
             <intent-filter>
-                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
-                <category android:name="android.intent.category.DEFAULT" />
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
 
