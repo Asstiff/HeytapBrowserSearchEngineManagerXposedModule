@@ -98,6 +98,9 @@ public class XposedInit implements IXposedHookLoadPackage {
 
         XposedBridge.log("XposedSearch: loaded in " + lpparam.packageName);
 
+        // 初始化 XSharedPreferences，用于读取配置
+        XposedPrefsManager.init();
+
         try {
             searchEngineInterface = XposedHelpers.findClass(
                     "com.heytap.browser.api.search.engine.c",
@@ -701,7 +704,64 @@ public class XposedInit implements IXposedHookLoadPackage {
         return null;
     }
 
+    /**
+     * 刷新配置
+     * 优先使用 XSharedPreferences 读取配置（更可靠）
+     * 如果失败，则回退到 ContentProvider
+     */
     private void refreshConfig() {
+        // 方法1: 使用 XSharedPreferences（更可靠，不依赖主应用进程）
+        boolean loadedFromPrefs = refreshConfigFromPrefs();
+        
+        if (loadedFromPrefs) {
+            return;
+        }
+
+        // 方法2: 回退到 ContentProvider（需要主应用运行）
+        refreshConfigFromProvider();
+    }
+
+    /**
+     * 从 XSharedPreferences 读取配置
+     * @return true 如果成功读取，false 如果失败
+     */
+    private boolean refreshConfigFromPrefs() {
+        try {
+            List<XposedPrefsManager.EngineConfigData> configs = XposedPrefsManager.loadEngines();
+            
+            if (configs.isEmpty()) {
+                XposedBridge.log("XposedSearch: XSharedPreferences returned empty config");
+                return false;
+            }
+
+            engineConfigs.clear();
+            for (XposedPrefsManager.EngineConfigData data : configs) {
+                engineConfigs.put(data.key, new EngineConfig(
+                        data.key,
+                        data.name,
+                        data.searchUrl,
+                        data.enabled,
+                        data.isBuiltin,
+                        data.isRemovedFromBrowser,
+                        data.hasBuiltinConflict
+                ));
+            }
+
+            // 清理不再存在的代理
+            cleanupProxies();
+
+            XposedBridge.log("XposedSearch: refreshed config from XSharedPreferences, count=" + engineConfigs.size());
+            return true;
+        } catch (Throwable t) {
+            XposedBridge.log("XposedSearch: [XSharedPreferences] failed: " + t.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 从 ContentProvider 读取配置（回退方案）
+     */
+    private void refreshConfigFromProvider() {
         if (appContext == null) return;
 
         try {
@@ -727,24 +787,31 @@ public class XposedInit implements IXposedHookLoadPackage {
                     }
 
                     // 清理不再存在的代理
-                    Set<String> keysToRemove = new HashSet<>();
-                    for (String proxyKey : customEngineProxies.keySet()) {
-                        EngineConfig config = engineConfigs.get(proxyKey);
-                        if (config == null || !config.enabled) {
-                            keysToRemove.add(proxyKey);
-                        }
-                    }
-                    for (String key : keysToRemove) {
-                        customEngineProxies.remove(key);
-                    }
+                    cleanupProxies();
 
-                    XposedBridge.log("XposedSearch: refreshed config, count=" + engineConfigs.size());
+                    XposedBridge.log("XposedSearch: refreshed config from Provider, count=" + engineConfigs.size());
                 } finally {
                     cursor.close();
                 }
             }
         } catch (Throwable t) {
             XposedBridge.log("XposedSearch: [Provider] failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 清理不再存在或已禁用的代理
+     */
+    private void cleanupProxies() {
+        Set<String> keysToRemove = new HashSet<>();
+        for (String proxyKey : customEngineProxies.keySet()) {
+            EngineConfig config = engineConfigs.get(proxyKey);
+            if (config == null || !config.enabled) {
+                keysToRemove.add(proxyKey);
+            }
+        }
+        for (String key : keysToRemove) {
+            customEngineProxies.remove(key);
         }
     }
 }

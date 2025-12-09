@@ -18,14 +18,20 @@ public class ConfigManager {
     public static final String PREF_NAME = "xposed_search_engines";
     private static final String KEY_ENGINES = "engines";
 
+    // 使用 MODE_WORLD_READABLE 以便 Xposed hook 可以通过 XSharedPreferences 读取
+    // 注意: 虽然此模式已被标记为 deprecated，但对于 Xposed 模块来说是必需的
+    @SuppressWarnings("deprecation")
+    private static final int PREFS_MODE = Context.MODE_WORLD_READABLE;
+
     // ------------------------- 读写配置 -------------------------
 
+    @SuppressWarnings("deprecation")
     public static List<SearchEngineConfig> loadEngines(Context context) {
         if (context == null) {
             return new ArrayList<>();
         }
 
-        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, PREFS_MODE);
         String json = sp.getString(KEY_ENGINES, null);
 
         if (json == null || json.isEmpty()) {
@@ -38,6 +44,7 @@ public class ConfigManager {
         return list;
     }
 
+    @SuppressWarnings("deprecation")
     public static void saveEngines(Context context, List<SearchEngineConfig> list) {
         if (context == null) return;
         if (list == null) list = new ArrayList<>();
@@ -45,8 +52,8 @@ public class ConfigManager {
         String json = toJson(list);
         Log.d(TAG, "[APP] saveEngines size=" + list.size());
 
-        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
-        sp.edit().putString(KEY_ENGINES, json).apply();
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, PREFS_MODE);
+        sp.edit().putString(KEY_ENGINES, json).commit(); // 使用 commit() 而非 apply() 确保立即写入
     }
 
     // ------------------------- 引擎发现与同步 -------------------------
