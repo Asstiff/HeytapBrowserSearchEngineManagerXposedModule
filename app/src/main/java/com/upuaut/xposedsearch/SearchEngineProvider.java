@@ -1,4 +1,4 @@
-package com.example.xposedsearch;
+package com.upuaut.xposedsearch;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -16,7 +16,7 @@ import java.util.Set;
 public class SearchEngineProvider extends ContentProvider {
 
     private static final String TAG = "XposedSearch";
-    public static final String AUTHORITY = "com.example.xposedsearch.engines";
+    public static final String AUTHORITY = "com.upuaut.xposedsearch.engines";
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/engines");
     public static final Uri DISCOVER_URI = Uri.parse("content://" + AUTHORITY + "/discover");
     public static final Uri DISCOVER_COMPLETE_URI = Uri.parse("content://" + AUTHORITY + "/discover_complete");

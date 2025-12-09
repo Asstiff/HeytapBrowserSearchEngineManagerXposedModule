@@ -1,4 +1,4 @@
-package com.example.xposedsearch;
+package com.upuaut.xposedsearch;
 
 public class SearchEngineConfig {
     public String key;

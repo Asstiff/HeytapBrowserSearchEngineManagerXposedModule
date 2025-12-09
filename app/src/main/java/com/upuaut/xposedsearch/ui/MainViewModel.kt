@@ -1,13 +1,13 @@
-package com.example.xposedsearch.ui
+package com.upuaut.xposedsearch.ui
 
 import android.app.Application
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.xposedsearch.AppUtils
-import com.example.xposedsearch.ConfigManager
-import com.example.xposedsearch.RootUtils
-import com.example.xposedsearch.SearchEngineConfig
+import com.upuaut.xposedsearch.AppUtils
+import com.upuaut.xposedsearch.ConfigManager
+import com.upuaut.xposedsearch.RootUtils
+import com.upuaut.xposedsearch.SearchEngineConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

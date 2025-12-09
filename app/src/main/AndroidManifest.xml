@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.xposedsearch">
+    package="com.upuaut.xposedsearch">
 
     <queries>
         <package android:name="com.heytap.browser" />
@@ -17,7 +17,7 @@
         <!-- ContentProvider -->
         <provider
             android:name=".SearchEngineProvider"
-            android:authorities="com.example.xposedsearch.engines"
+            android:authorities="com.upuaut.xposedsearch.engines"
             android:exported="true"
             android:grantUriPermissions="true" />
 

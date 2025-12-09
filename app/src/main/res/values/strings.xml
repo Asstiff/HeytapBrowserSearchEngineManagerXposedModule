@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">HeytapEngineManager</string>
-    <string name="app_description">HeytapEngineManager</string>
+    <string name="app_name">HeyTap 浏览器搜索引擎管理器</string>
+    <string name="app_description">编辑 HeyTap 浏览器搜素引擎</string>
 </resources>

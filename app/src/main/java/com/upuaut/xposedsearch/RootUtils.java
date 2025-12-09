@@ -1,4 +1,4 @@
-package com.example.xposedsearch;
+package com.upuaut.xposedsearch;
 
 import android.util.Log;
 

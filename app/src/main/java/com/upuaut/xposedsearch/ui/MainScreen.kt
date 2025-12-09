@@ -1,4 +1,4 @@
-package com.example.xposedsearch.ui
+package com.upuaut.xposedsearch.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -30,11 +31,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.xposedsearch.SearchEngineConfig
+import com.upuaut.xposedsearch.SearchEngineConfig
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.extra.SuperDialog
 import top.yukonga.miuix.kmp.extra.SuperSwitch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 @Composable
 fun MainScreen(
@@ -82,10 +85,14 @@ fun MainScreen(
     // 获取导航条高度
     val navigationBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
+    // 滚动行为 - 用于动态标题栏效果
+    val topAppBarScrollBehavior = MiuixScrollBehavior()
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = "HeytapEngineManager"
+                title = "HeytapEngineManager",
+                scrollBehavior = topAppBarScrollBehavior
             )
         },
         floatingActionButton = {
@@ -104,9 +111,15 @@ fun MainScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 80.dp + navigationBarPadding),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .scrollEndHaptic() // 滚动到底部振动效果
+                .overScrollVertical() // 过度滚动回弹效果
+                .nestedScroll(topAppBarScrollBehavior.nestedScrollConnection), // 连接滚动行为
+            contentPadding = PaddingValues(
+                top = paddingValues.calculateTopPadding() + 12.dp,
+                bottom = 80.dp + navigationBarPadding
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            overscrollEffect = null // 禁用默认的 overscroll 效果，使用 miuix 的
         ) {
             item {
                 StatusCard(
@@ -303,7 +316,6 @@ fun MainScreen(
         )
     }
 
-    // 新增：冲突对话框
     uiState.conflictEngine?.let { engine ->
         BuiltinConflictDialog(
             show = showConflictDialog,
@@ -337,9 +349,8 @@ fun MainScreen(
     )
 }
 
+// 其余组件保持不变...
 private val CardPadding = 20.dp
-
-// 更淡的灰色用于操作按钮
 private val ActionButtonColor = Color(0xFFBDBDBD)
 
 @Composable
@@ -515,17 +526,14 @@ fun EngineItem(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 左侧：名称
             Text(
                 text = engine.name,
                 color = MiuixTheme.colorScheme.onSurface
             )
 
-            // 右侧：操作按钮 + 开关（编辑按钮始终在最右侧，紧邻开关）
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 已消失警告按钮
                 onRemoved?.let {
                     IconButton(onClick = it) {
                         Icon(
@@ -536,7 +544,6 @@ fun EngineItem(
                     }
                 }
 
-                // 冲突警告按钮（自定义引擎与内置引擎冲突）
                 onConflict?.let {
                     IconButton(onClick = it) {
                         Icon(
@@ -547,7 +554,6 @@ fun EngineItem(
                     }
                 }
 
-                // 更新按钮
                 onUpdate?.let {
                     IconButton(onClick = it) {
                         Icon(
@@ -558,7 +564,6 @@ fun EngineItem(
                     }
                 }
 
-                // 删除按钮（自定义引擎）
                 onDelete?.let {
                     IconButton(onClick = it) {
                         Icon(
@@ -569,7 +574,6 @@ fun EngineItem(
                     }
                 }
 
-                // 恢复默认按钮
                 onReset?.let {
                     IconButton(onClick = it) {
                         Icon(
@@ -580,7 +584,6 @@ fun EngineItem(
                     }
                 }
 
-                // 编辑按钮（始终在最右侧）
                 IconButton(onClick = onEdit) {
                     Icon(
                         imageVector = Icons.Default.Edit,
@@ -589,7 +592,6 @@ fun EngineItem(
                     )
                 }
 
-                // 开关
                 Switch(
                     checked = engine.enabled,
                     onCheckedChange = onEnabledChange
@@ -692,7 +694,6 @@ fun EngineRemovedDialog(
     }
 }
 
-// 新增：内置引擎冲突对话框
 @Composable
 fun BuiltinConflictDialog(
     show: MutableState<Boolean>,
@@ -916,7 +917,6 @@ fun EditEngineDialog(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (isBuiltin) {
-                // 内置引擎：禁用状态的 Key 显示
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -941,7 +941,6 @@ fun EditEngineDialog(
                     }
                 }
             } else {
-                // 自定义引擎：可编辑的 Key
                 TextField(
                     value = key,
                     onValueChange = {

@@ -1,4 +1,4 @@
-package com.example.xposedsearch;
+package com.upuaut.xposedsearch;
 
 import android.app.Application;
 import android.content.ContentResolver;
@@ -29,9 +29,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class XposedInit implements IXposedHookLoadPackage {
 
     private static final String TARGET_PACKAGE = "com.heytap.browser";
-    private static final String PROVIDER_URI = "content://com.example.xposedsearch.engines/engines";
-    private static final String PROVIDER_DISCOVER_URI = "content://com.example.xposedsearch.engines/discover";
-    private static final String PROVIDER_DISCOVER_COMPLETE_URI = "content://com.example.xposedsearch.engines/discover_complete";
+    private static final String PROVIDER_URI = "content://com.upuaut.xposedsearch.engines/engines";
+    private static final String PROVIDER_DISCOVER_URI = "content://com.upuaut.xposedsearch.engines/discover";
+    private static final String PROVIDER_DISCOVER_COMPLETE_URI = "content://com.upuaut.xposedsearch.engines/discover_complete";
 
     private Context appContext;
     private Map<String, EngineConfig> engineConfigs = new HashMap<>();
@@ -72,10 +72,10 @@ public class XposedInit implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         // Hook 自身应用
-        if (lpparam.packageName.equals("com.example.xposedsearch")) {
+        if (lpparam.packageName.equals("com.upuaut.xposedsearch")) {
             try {
                 XposedHelpers.findAndHookMethod(
-                        "com.example.xposedsearch.ui.MainViewModelKt",
+                        "com.upuaut.xposedsearch.ui.MainViewModelKt",
                         lpparam.classLoader,
                         "isXposedModuleActive",
                         new XC_MethodReplacement() {

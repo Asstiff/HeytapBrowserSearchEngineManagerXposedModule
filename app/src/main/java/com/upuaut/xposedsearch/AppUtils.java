@@ -1,4 +1,4 @@
-package com.example.xposedsearch;
+package com.upuaut.xposedsearch;
 
 import android.content.ComponentName;
 import android.content.Context;
@@ -15,7 +15,7 @@ public class AppUtils {
      */
     public static void setIconHidden(Context context, boolean hidden) {
         PackageManager pm = context.getPackageManager();
-        ComponentName componentName = new ComponentName(context, "com.example.xposedsearch.MainActivityAlias");
+        ComponentName componentName = new ComponentName(context, "com.upuaut.xposedsearch.MainActivityAlias");
 
         int newState = hidden
                 ? PackageManager.COMPONENT_ENABLED_STATE_DISABLED
@@ -45,7 +45,7 @@ public class AppUtils {
      */
     public static boolean isIconActuallyHidden(Context context) {
         PackageManager pm = context.getPackageManager();
-        ComponentName componentName = new ComponentName(context, "com.example.xposedsearch.MainActivityAlias");
+        ComponentName componentName = new ComponentName(context, "com.upuaut.xposedsearch.MainActivityAlias");
 
         int state = pm.getComponentEnabledSetting(componentName);
         return state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
