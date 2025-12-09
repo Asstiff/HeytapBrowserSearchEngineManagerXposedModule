@@ -9,7 +9,9 @@ import android.net.Uri;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SearchEngineProvider extends ContentProvider {
 
@@ -17,10 +19,12 @@ public class SearchEngineProvider extends ContentProvider {
     public static final String AUTHORITY = "com.example.xposedsearch.engines";
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/engines");
     public static final Uri DISCOVER_URI = Uri.parse("content://" + AUTHORITY + "/discover");
+    public static final Uri DISCOVER_COMPLETE_URI = Uri.parse("content://" + AUTHORITY + "/discover_complete");
 
     private static final int CODE_ENGINES = 1;
     private static final int CODE_DISCOVER = 2;
     private static final int CODE_ENGINE_ITEM = 3;
+    private static final int CODE_DISCOVER_COMPLETE = 4;
 
     private static final UriMatcher uriMatcher = new UriMatcher(UriMatcher.NO_MATCH);
 
@@ -28,6 +32,7 @@ public class SearchEngineProvider extends ContentProvider {
         uriMatcher.addURI(AUTHORITY, "engines", CODE_ENGINES);
         uriMatcher.addURI(AUTHORITY, "discover", CODE_DISCOVER);
         uriMatcher.addURI(AUTHORITY, "engines/*", CODE_ENGINE_ITEM);
+        uriMatcher.addURI(AUTHORITY, "discover_complete", CODE_DISCOVER_COMPLETE);
     }
 
     // 列名
@@ -39,6 +44,13 @@ public class SearchEngineProvider extends ContentProvider {
     public static final String COL_IS_MODIFIED = "isModified";
     public static final String COL_ORIGINAL_NAME = "originalName";
     public static final String COL_ORIGINAL_SEARCH_URL = "originalSearchUrl";
+    public static final String COL_HAS_UPDATE = "hasUpdate";
+    public static final String COL_PENDING_NAME = "pendingName";
+    public static final String COL_PENDING_SEARCH_URL = "pendingSearchUrl";
+    public static final String COL_IS_REMOVED = "isRemovedFromBrowser";
+
+    // 用于追踪本次发现的引擎
+    private Set<String> currentDiscoveredKeys = new HashSet<>();
 
     @Override
     public boolean onCreate() {
@@ -77,7 +89,8 @@ public class SearchEngineProvider extends ContentProvider {
     private MatrixCursor buildCursor(List<SearchEngineConfig> engines) {
         String[] columns = {
                 COL_KEY, COL_NAME, COL_SEARCH_URL, COL_ENABLED,
-                COL_IS_BUILTIN, COL_IS_MODIFIED, COL_ORIGINAL_NAME, COL_ORIGINAL_SEARCH_URL
+                COL_IS_BUILTIN, COL_IS_MODIFIED, COL_ORIGINAL_NAME, COL_ORIGINAL_SEARCH_URL,
+                COL_HAS_UPDATE, COL_PENDING_NAME, COL_PENDING_SEARCH_URL, COL_IS_REMOVED
         };
         MatrixCursor cursor = new MatrixCursor(columns);
 
@@ -90,7 +103,11 @@ public class SearchEngineProvider extends ContentProvider {
                     cfg.isBuiltin ? 1 : 0,
                     cfg.isModified ? 1 : 0,
                     cfg.originalName != null ? cfg.originalName : "",
-                    cfg.originalSearchUrl != null ? cfg.originalSearchUrl : ""
+                    cfg.originalSearchUrl != null ? cfg.originalSearchUrl : "",
+                    cfg.hasUpdate ? 1 : 0,
+                    cfg.pendingName != null ? cfg.pendingName : "",
+                    cfg.pendingSearchUrl != null ? cfg.pendingSearchUrl : "",
+                    cfg.isRemovedFromBrowser ? 1 : 0
             });
         }
 
@@ -106,18 +123,32 @@ public class SearchEngineProvider extends ContentProvider {
         int match = uriMatcher.match(uri);
 
         if (match == CODE_DISCOVER) {
-            // 从浏览器发现引擎（包含 URL）
+            // 从浏览器发现引擎
             String key = values.getAsString("key");
             String name = values.getAsString("name");
             String searchUrl = values.getAsString("searchUrl");
 
             if (key != null && !key.isEmpty()) {
+                // 追踪发现的引擎
+                currentDiscoveredKeys.add(key);
+
                 boolean updated = ConfigManager.handleDiscoveredEngine(getContext(), key, name, searchUrl);
                 if (updated && getContext() != null) {
                     getContext().getContentResolver().notifyChange(CONTENT_URI, null);
                 }
                 return Uri.withAppendedPath(CONTENT_URI, key);
             }
+
+        } else if (match == CODE_DISCOVER_COMPLETE) {
+            // 发现完成，标记未发现的引擎为已消失
+            if (!currentDiscoveredKeys.isEmpty()) {
+                ConfigManager.markMissingEnginesAsRemoved(getContext(), currentDiscoveredKeys);
+                currentDiscoveredKeys.clear();
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
+                }
+            }
+            return DISCOVER_COMPLETE_URI;
 
         } else if (match == CODE_ENGINES) {
             // 添加自定义引擎
@@ -146,6 +177,7 @@ public class SearchEngineProvider extends ContentProvider {
             String key = uri.getLastPathSegment();
             if (key == null) return 0;
 
+            // 重置操作
             Boolean reset = values.getAsBoolean("reset");
             if (reset != null && reset) {
                 boolean success = ConfigManager.resetEngine(getContext(), key);
@@ -154,6 +186,36 @@ public class SearchEngineProvider extends ContentProvider {
                     return 1;
                 }
                 return 0;
+            }
+
+            // 应用更新操作
+            Boolean applyUpdate = values.getAsBoolean("applyUpdate");
+            if (applyUpdate != null && applyUpdate) {
+                ConfigManager.applyPendingUpdate(getContext(), key);
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(uri, null);
+                }
+                return 1;
+            }
+
+            // 忽略更新操作
+            Boolean ignoreUpdate = values.getAsBoolean("ignoreUpdate");
+            if (ignoreUpdate != null && ignoreUpdate) {
+                ConfigManager.ignorePendingUpdate(getContext(), key);
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(uri, null);
+                }
+                return 1;
+            }
+
+            // 转换为自定义引擎
+            Boolean convertToCustom = values.getAsBoolean("convertToCustom");
+            if (convertToCustom != null && convertToCustom) {
+                ConfigManager.convertToCustomEngine(getContext(), key);
+                if (getContext() != null) {
+                    getContext().getContentResolver().notifyChange(uri, null);
+                }
+                return 1;
             }
 
             String name = values.getAsString("name");

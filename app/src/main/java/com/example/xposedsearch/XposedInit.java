@@ -21,6 +21,7 @@ import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
@@ -30,11 +31,12 @@ public class XposedInit implements IXposedHookLoadPackage {
     private static final String TARGET_PACKAGE = "com.heytap.browser";
     private static final String PROVIDER_URI = "content://com.example.xposedsearch.engines/engines";
     private static final String PROVIDER_DISCOVER_URI = "content://com.example.xposedsearch.engines/discover";
+    private static final String PROVIDER_DISCOVER_COMPLETE_URI = "content://com.example.xposedsearch.engines/discover_complete";
 
     private Context appContext;
     private Map<String, EngineConfig> engineConfigs = new HashMap<>();
     private Set<String> reportedEngines = new HashSet<>();
-    private Set<String> builtinEngineKeys = new HashSet<>();
+    private Set<String> currentDiscoveredKeys = new HashSet<>();
 
     private Class<?> searchEngineImplClass = null;
     private Class<?> searchEngineInterface = null;
@@ -47,18 +49,41 @@ public class XposedInit implements IXposedHookLoadPackage {
         String searchUrl;
         boolean enabled;
         boolean isBuiltin;
+        boolean isRemovedFromBrowser;
 
-        EngineConfig(String key, String name, String searchUrl, boolean enabled, boolean isBuiltin) {
+        EngineConfig(String key, String name, String searchUrl, boolean enabled, boolean isBuiltin, boolean isRemovedFromBrowser) {
             this.key = key;
             this.name = name;
             this.searchUrl = searchUrl;
             this.enabled = enabled;
             this.isBuiltin = isBuiltin;
+            this.isRemovedFromBrowser = isRemovedFromBrowser;
         }
     }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
+        // Hook 自身应用
+        if (lpparam.packageName.equals("com.example.xposedsearch")) {
+            try {
+                XposedHelpers.findAndHookMethod(
+                        "com.example.xposedsearch.ui.MainViewModelKt",
+                        lpparam.classLoader,
+                        "isXposedModuleActive",
+                        new XC_MethodReplacement() {
+                            @Override
+                            protected Object replaceHookedMethod(MethodHookParam param) {
+                                return true;
+                            }
+                        }
+                );
+                XposedBridge.log("XposedSearch: hooked isXposedModuleActive in self");
+            } catch (Throwable t) {
+                XposedBridge.log("XposedSearch: failed to hook self: " + t.getMessage());
+            }
+            return;
+        }
+
         if (!lpparam.packageName.equals(TARGET_PACKAGE)) {
             return;
         }
@@ -119,17 +144,23 @@ public class XposedInit implements IXposedHookLoadPackage {
 
                     XposedBridge.log("XposedSearch: o - original count: " + engineList.size());
 
+                    // 开始新一轮发现
+                    currentDiscoveredKeys.clear();
+
                     refreshConfig();
 
                     for (Object engine : engineList) {
                         reportDiscoveredEngine(engine);
                     }
 
-                    // 修复：传入现有列表，避免重复添加
-                    List<Object> customEngines = createCustomEngines(engineList);
-                    if (!customEngines.isEmpty()) {
-                        engineList.addAll(customEngines);
-                        XposedBridge.log("XposedSearch: o - added " + customEngines.size() + " custom engines");
+                    // 发现完成，通知 Provider
+                    notifyDiscoverComplete();
+
+                    // 添加自定义引擎和已消失但仍启用的内置引擎
+                    List<Object> additionalEngines = createAdditionalEngines(engineList);
+                    if (!additionalEngines.isEmpty()) {
+                        engineList.addAll(additionalEngines);
+                        XposedBridge.log("XposedSearch: o - added " + additionalEngines.size() + " additional engines");
                     }
 
                     List<Object> filteredList = filterEngineList(engineList);
@@ -151,16 +182,19 @@ public class XposedInit implements IXposedHookLoadPackage {
 
                     XposedBridge.log("XposedSearch: d0 - original count: " + engineList.size());
 
+                    currentDiscoveredKeys.clear();
+
                     refreshConfig();
 
                     for (Object engine : engineList) {
                         reportDiscoveredEngine(engine);
                     }
 
-                    // 修复：传入现有列表，避免重复添加
-                    List<Object> customEngines = createCustomEngines(engineList);
-                    if (!customEngines.isEmpty()) {
-                        engineList.addAll(customEngines);
+                    notifyDiscoverComplete();
+
+                    List<Object> additionalEngines = createAdditionalEngines(engineList);
+                    if (!additionalEngines.isEmpty()) {
+                        engineList.addAll(additionalEngines);
                     }
 
                     List<Object> filteredList = filterEngineList(engineList);
@@ -218,11 +252,13 @@ public class XposedInit implements IXposedHookLoadPackage {
                         if (requestedKey != null) {
                             refreshConfig();
                             EngineConfig config = engineConfigs.get(requestedKey);
-                            if (config != null && config.enabled && !config.isBuiltin) {
+                            // 为自定义引擎或已消失但仍启用的内置引擎创建代理
+                            if (config != null && config.enabled &&
+                                    (!config.isBuiltin || config.isRemovedFromBrowser)) {
                                 Object customEngine = getOrCreateCustomEngineProxy(config);
                                 if (customEngine != null) {
                                     param.setResult(customEngine);
-                                    XposedBridge.log("XposedSearch: i0 - returned custom engine: " + requestedKey);
+                                    XposedBridge.log("XposedSearch: i0 - returned proxy engine: " + requestedKey);
                                     return;
                                 }
                             }
@@ -252,11 +288,24 @@ public class XposedInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * 创建自定义引擎列表（修复：检查是否已存在，避免重复）
-     * @param existingEngines 当前已存在的引擎列表
+     * 通知 Provider 发现完成
      */
-    private List<Object> createCustomEngines(List<Object> existingEngines) {
-        List<Object> customEngines = new ArrayList<>();
+    private void notifyDiscoverComplete() {
+        if (appContext == null) return;
+        try {
+            ContentResolver resolver = appContext.getContentResolver();
+            resolver.insert(Uri.parse(PROVIDER_DISCOVER_COMPLETE_URI), new ContentValues());
+            XposedBridge.log("XposedSearch: notified discover complete, keys=" + currentDiscoveredKeys.size());
+        } catch (Throwable t) {
+            XposedBridge.log("XposedSearch: failed to notify discover complete: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 创建额外的引擎列表（自定义引擎 + 已消失但仍启用的内置引擎）
+     */
+    private List<Object> createAdditionalEngines(List<Object> existingEngines) {
+        List<Object> additionalEngines = new ArrayList<>();
 
         // 收集已存在的所有 key
         Set<String> existingKeys = new HashSet<>();
@@ -268,27 +317,29 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
 
         for (EngineConfig config : engineConfigs.values()) {
-            if (config.enabled &&
-                    !config.isBuiltin &&
-                    config.searchUrl != null &&
-                    !config.searchUrl.isEmpty()) {
+            // 跳过已存在的
+            if (existingKeys.contains(config.key)) {
+                continue;
+            }
 
-                // 关键修复：检查是否已存在，避免重复添加
-                if (existingKeys.contains(config.key)) {
-                    XposedBridge.log("XposedSearch: custom engine already exists, skip: " + config.key);
-                    continue;
-                }
+            // 必须启用且有搜索 URL
+            if (!config.enabled || config.searchUrl == null || config.searchUrl.isEmpty()) {
+                continue;
+            }
 
+            // 自定义引擎或已消失的内置引擎
+            if (!config.isBuiltin || config.isRemovedFromBrowser) {
                 Object proxy = getOrCreateCustomEngineProxy(config);
                 if (proxy != null) {
-                    customEngines.add(proxy);
-                    existingKeys.add(config.key); // 防止同一次调用中重复
-                    XposedBridge.log("XposedSearch: created custom engine: " + config.key);
+                    additionalEngines.add(proxy);
+                    existingKeys.add(config.key);
+                    XposedBridge.log("XposedSearch: created proxy for: " + config.key +
+                            (config.isRemovedFromBrowser ? " (removed builtin)" : " (custom)"));
                 }
             }
         }
 
-        return customEngines;
+        return additionalEngines;
     }
 
     private Object getOrCreateCustomEngineProxy(EngineConfig config) {
@@ -465,15 +516,14 @@ public class XposedInit implements IXposedHookLoadPackage {
                     reportDiscoveredEngine(engine);
                 }
 
-                // 修复：传入现有列表，避免重复添加
-                List<Object> customEngines = createCustomEngines(engineList);
-                if (!customEngines.isEmpty()) {
-                    engineList.addAll(customEngines);
+                List<Object> additionalEngines = createAdditionalEngines(engineList);
+                if (!additionalEngines.isEmpty()) {
+                    engineList.addAll(additionalEngines);
                 }
 
                 List<Object> filteredList = filterEngineList(engineList);
 
-                if (filteredList.size() != ((List<?>) result).size() || !customEngines.isEmpty()) {
+                if (filteredList.size() != ((List<?>) result).size() || !additionalEngines.isEmpty()) {
                     param.setResult(filteredList);
                     XposedBridge.log("XposedSearch: " + methodName + " - " +
                             ((List<?>) result).size() + " -> " + filteredList.size());
@@ -507,20 +557,23 @@ public class XposedInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * 上报发现的引擎（包含完整信息）
+     * 上报发现的引擎
      */
     private void reportDiscoveredEngine(Object engine) {
         if (appContext == null || engine == null) return;
 
         String key = getKey(engine);
-        if (key == null || reportedEngines.contains(key)) {
+        if (key == null) return;
+
+        // 追踪发现的 key
+        currentDiscoveredKeys.add(key);
+
+        if (reportedEngines.contains(key)) {
             return;
         }
 
         String label = getLabel(engine);
         String searchUrl = getSearchUrl(engine);
-
-        builtinEngineKeys.add(key);
 
         try {
             ContentResolver resolver = appContext.getContentResolver();
@@ -542,13 +595,9 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 获取引擎的搜索 URL 模板
-     */
     private String getSearchUrl(Object obj) {
         if (obj == null) return null;
 
-        // 尝试调用 v() 方法
         try {
             Object result = XposedHelpers.callMethod(obj, "v");
             if (result instanceof String && !((String) result).isEmpty()) {
@@ -556,7 +605,6 @@ public class XposedInit implements IXposedHookLoadPackage {
             }
         } catch (Throwable ignored) {}
 
-        // 尝试调用 z() 方法
         try {
             Object result = XposedHelpers.callMethod(obj, "z");
             if (result instanceof String && !((String) result).isEmpty()) {
@@ -605,8 +653,6 @@ public class XposedInit implements IXposedHookLoadPackage {
             if (cursor != null) {
                 try {
                     engineConfigs.clear();
-                    // 注意：不再清空 customEngineProxies，保持代理对象缓存
-                    // 这样可以确保同一个 key 始终返回同一个代理对象
 
                     while (cursor.moveToNext()) {
                         String key = cursor.getString(cursor.getColumnIndexOrThrow("key"));
@@ -614,19 +660,16 @@ public class XposedInit implements IXposedHookLoadPackage {
                         String searchUrl = cursor.getString(cursor.getColumnIndexOrThrow("searchUrl"));
                         boolean enabled = cursor.getInt(cursor.getColumnIndexOrThrow("enabled")) == 1;
                         boolean isBuiltin = cursor.getInt(cursor.getColumnIndexOrThrow("isBuiltin")) == 1;
+                        boolean isRemoved = cursor.getInt(cursor.getColumnIndexOrThrow("isRemovedFromBrowser")) == 1;
 
-                        engineConfigs.put(key, new EngineConfig(key, name, searchUrl, enabled, isBuiltin));
-
-                        if (isBuiltin) {
-                            builtinEngineKeys.add(key);
-                        }
+                        engineConfigs.put(key, new EngineConfig(key, name, searchUrl, enabled, isBuiltin, isRemoved));
                     }
 
-                    // 清理不再存在的自定义引擎代理
+                    // 清理不再存在的代理
                     Set<String> keysToRemove = new HashSet<>();
                     for (String proxyKey : customEngineProxies.keySet()) {
                         EngineConfig config = engineConfigs.get(proxyKey);
-                        if (config == null || config.isBuiltin || !config.enabled) {
+                        if (config == null || !config.enabled) {
                             keysToRemove.add(proxyKey);
                         }
                     }

@@ -9,7 +9,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class ConfigManager {
 
@@ -52,6 +54,7 @@ public class ConfigManager {
 
     /**
      * 处理从浏览器发现的引擎
+     * 现在不会直接更新未修改的引擎，而是标记更新供用户确认
      * @return true 表示有更新，false 表示无变化
      */
     public static boolean handleDiscoveredEngine(Context context, String key, String name, String searchUrl) {
@@ -66,40 +69,170 @@ public class ConfigManager {
             newEngine.key = key;
             newEngine.name = name != null ? name : key;
             newEngine.searchUrl = searchUrl != null ? searchUrl : "";
-            newEngine.enabled = true;  // 默认启用
+            newEngine.enabled = true;
             newEngine.isBuiltin = true;
             newEngine.isModified = false;
             newEngine.originalName = newEngine.name;
             newEngine.originalSearchUrl = newEngine.searchUrl;
+            newEngine.isRemovedFromBrowser = false;
+            newEngine.hasUpdate = false;
 
             engines.add(newEngine);
             saveEngines(context, engines);
             Log.d(TAG, "[APP] discovered new engine: " + key + " (" + name + ")");
             return true;
 
-        } else if (existing.isBuiltin && !existing.isModified) {
-            // 已存在的内置引擎，用户未修改过，检查是否需要更新
-            boolean needUpdate = false;
+        } else if (existing.isBuiltin) {
+            boolean changed = false;
 
-            if (name != null && !name.equals(existing.originalName)) {
-                needUpdate = true;
-            }
-            if (searchUrl != null && !searchUrl.isEmpty() && !searchUrl.equals(existing.originalSearchUrl)) {
-                needUpdate = true;
+            // 如果之前被标记为已消失，现在又出现了，清除标记
+            if (existing.isRemovedFromBrowser) {
+                existing.isRemovedFromBrowser = false;
+                changed = true;
+                Log.d(TAG, "[APP] engine reappeared: " + key);
             }
 
-            if (needUpdate) {
-                existing.name = name != null ? name : existing.name;
-                existing.searchUrl = (searchUrl != null && !searchUrl.isEmpty()) ? searchUrl : existing.searchUrl;
-                existing.originalName = existing.name;
-                existing.originalSearchUrl = existing.searchUrl;
+            // 检查是否有更新
+            boolean nameChanged = name != null && !name.equals(existing.originalName);
+            boolean urlChanged = searchUrl != null && !searchUrl.isEmpty()
+                    && !searchUrl.equals(existing.originalSearchUrl);
+
+            if (nameChanged || urlChanged) {
+                if (existing.isModified) {
+                    // 用户已修改过，静默更新原始信息，但保持用户的修改
+                    existing.originalName = name != null ? name : existing.originalName;
+                    existing.originalSearchUrl = (searchUrl != null && !searchUrl.isEmpty())
+                            ? searchUrl : existing.originalSearchUrl;
+                    existing.hasUpdate = false;
+                    existing.pendingName = null;
+                    existing.pendingSearchUrl = null;
+                    changed = true;
+                    Log.d(TAG, "[APP] silently updated original info for modified engine: " + key);
+                } else {
+                    // 用户未修改过，标记为有更新待确认
+                    existing.hasUpdate = true;
+                    existing.pendingName = nameChanged ? name : null;
+                    existing.pendingSearchUrl = urlChanged ? searchUrl : null;
+                    changed = true;
+                    Log.d(TAG, "[APP] marked update available for engine: " + key);
+                }
+            }
+
+            if (changed) {
                 saveEngines(context, engines);
-                Log.d(TAG, "[APP] updated engine from browser: " + key);
                 return true;
             }
         }
-        // 用户已修改过，不更新
+
         return false;
+    }
+
+    /**
+     * 标记未被发现的内置引擎为已消失
+     * @param discoveredKeys 本次发现的所有引擎 key
+     */
+    public static void markMissingEnginesAsRemoved(Context context, Set<String> discoveredKeys) {
+        if (context == null || discoveredKeys == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        boolean changed = false;
+
+        for (SearchEngineConfig engine : engines) {
+            if (engine.isBuiltin && !discoveredKeys.contains(engine.key)) {
+                if (!engine.isRemovedFromBrowser) {
+                    engine.isRemovedFromBrowser = true;
+                    changed = true;
+                    Log.d(TAG, "[APP] marked engine as removed: " + engine.key);
+                }
+            }
+        }
+
+        if (changed) {
+            saveEngines(context, engines);
+        }
+    }
+
+    /**
+     * 应用待更新的信息
+     */
+    public static void applyPendingUpdate(Context context, String key) {
+        if (context == null || key == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || !engine.hasUpdate) return;
+
+        // 应用更新
+        if (engine.pendingName != null) {
+            engine.name = engine.pendingName;
+            engine.originalName = engine.pendingName;
+        }
+        if (engine.pendingSearchUrl != null) {
+            engine.searchUrl = engine.pendingSearchUrl;
+            engine.originalSearchUrl = engine.pendingSearchUrl;
+        }
+
+        // 清除更新标记
+        engine.hasUpdate = false;
+        engine.pendingName = null;
+        engine.pendingSearchUrl = null;
+
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] applied pending update for engine: " + key);
+    }
+
+    /**
+     * 忽略待更新（保持当前状态，但将待更新信息设为新的原始信息）
+     */
+    public static void ignorePendingUpdate(Context context, String key) {
+        if (context == null || key == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || !engine.hasUpdate) return;
+
+        // 更新原始信息但保持当前显示信息
+        if (engine.pendingName != null) {
+            engine.originalName = engine.pendingName;
+        }
+        if (engine.pendingSearchUrl != null) {
+            engine.originalSearchUrl = engine.pendingSearchUrl;
+        }
+
+        // 标记为已修改（因为用户选择保持当前信息）
+        engine.isModified = true;
+        engine.hasUpdate = false;
+        engine.pendingName = null;
+        engine.pendingSearchUrl = null;
+
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] ignored pending update for engine: " + key);
+    }
+
+    /**
+     * 将内置引擎转换为自定义引擎
+     */
+    public static void convertToCustomEngine(Context context, String key) {
+        if (context == null || key == null) return;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, key);
+
+        if (engine == null || !engine.isBuiltin) return;
+
+        engine.isBuiltin = false;
+        engine.isModified = false;
+        engine.isRemovedFromBrowser = false;
+        engine.hasUpdate = false;
+        engine.originalName = null;
+        engine.originalSearchUrl = null;
+        engine.pendingName = null;
+        engine.pendingSearchUrl = null;
+
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] converted to custom engine: " + key);
     }
 
     /**
@@ -124,7 +257,7 @@ public class ConfigManager {
     }
 
     /**
-     * 用户修改引擎（标记为已修改）
+     * 用户修改内置引擎（标记为已修改，不能改 key）
      */
     public static void updateEngineByUser(Context context, String key, String name, String searchUrl, boolean enabled) {
         if (context == null || key == null) return;
@@ -137,9 +270,53 @@ public class ConfigManager {
         engine.name = name;
         engine.searchUrl = searchUrl;
         engine.enabled = enabled;
-        engine.isModified = true;
+
+        // 只有内置引擎需要标记为已修改
+        if (engine.isBuiltin) {
+            engine.isModified = true;
+        }
 
         saveEngines(context, engines);
+        Log.d(TAG, "[APP] updated engine by user: " + key);
+    }
+
+    /**
+     * 更新自定义引擎（可修改 key）
+     * @return true 成功，false 表示新 key 已存在冲突
+     */
+    public static boolean updateCustomEngineWithKey(Context context, String oldKey, String newKey, String name, String searchUrl, boolean enabled) {
+        if (context == null || oldKey == null || newKey == null || newKey.isEmpty()) return false;
+
+        List<SearchEngineConfig> engines = loadEngines(context);
+        SearchEngineConfig engine = findByKey(engines, oldKey);
+
+        if (engine == null || engine.isBuiltin) return false;
+
+        // 如果 key 没变，直接更新
+        if (oldKey.equals(newKey)) {
+            engine.name = name;
+            engine.searchUrl = searchUrl;
+            engine.enabled = enabled;
+            saveEngines(context, engines);
+            Log.d(TAG, "[APP] updated custom engine: " + oldKey);
+            return true;
+        }
+
+        // 如果 key 变了，检查新 key 是否冲突
+        if (findByKey(engines, newKey) != null) {
+            Log.d(TAG, "[APP] key conflict: " + newKey);
+            return false; // 新 key 已存在
+        }
+
+        // 更新 key 和其他字段
+        engine.key = newKey;
+        engine.name = name;
+        engine.searchUrl = searchUrl;
+        engine.enabled = enabled;
+
+        saveEngines(context, engines);
+        Log.d(TAG, "[APP] updated custom engine key: " + oldKey + " -> " + newKey);
+        return true;
     }
 
     /**
@@ -187,7 +364,7 @@ public class ConfigManager {
     }
 
     /**
-     * 删除引擎（只能删除用户自定义引擎）
+     * 删除引擎
      */
     public static boolean deleteEngine(Context context, String key) {
         if (context == null || key == null) return false;
@@ -195,7 +372,7 @@ public class ConfigManager {
         List<SearchEngineConfig> engines = loadEngines(context);
         SearchEngineConfig engine = findByKey(engines, key);
 
-        if (engine == null || !engine.canDelete()) {
+        if (engine == null) {
             return false;
         }
 
@@ -236,6 +413,15 @@ public class ConfigManager {
                     if (cfg.originalSearchUrl != null) {
                         obj.put("originalSearchUrl", cfg.originalSearchUrl);
                     }
+                    // 新增字段
+                    obj.put("hasUpdate", cfg.hasUpdate);
+                    if (cfg.pendingName != null) {
+                        obj.put("pendingName", cfg.pendingName);
+                    }
+                    if (cfg.pendingSearchUrl != null) {
+                        obj.put("pendingSearchUrl", cfg.pendingSearchUrl);
+                    }
+                    obj.put("isRemovedFromBrowser", cfg.isRemovedFromBrowser);
                     array.put(obj);
                 } catch (JSONException ignored) {
                 }
@@ -264,6 +450,11 @@ public class ConfigManager {
                 cfg.isModified = obj.optBoolean("isModified", false);
                 cfg.originalName = obj.has("originalName") ? obj.optString("originalName") : null;
                 cfg.originalSearchUrl = obj.has("originalSearchUrl") ? obj.optString("originalSearchUrl") : null;
+                // 新增字段
+                cfg.hasUpdate = obj.optBoolean("hasUpdate", false);
+                cfg.pendingName = obj.has("pendingName") ? obj.optString("pendingName") : null;
+                cfg.pendingSearchUrl = obj.has("pendingSearchUrl") ? obj.optString("pendingSearchUrl") : null;
+                cfg.isRemovedFromBrowser = obj.optBoolean("isRemovedFromBrowser", false);
 
                 if (!cfg.key.isEmpty()) {
                     list.add(cfg);
