@@ -8,6 +8,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -18,27 +19,18 @@ public class ConfigManager {
     public static final String PREF_NAME = "xposed_search_engines";
     private static final String KEY_ENGINES = "engines";
 
-    /**
-     * 使用 MODE_WORLD_READABLE 以便 Xposed hook 可以通过 XSharedPreferences 读取配置
-     * 
-     * 安全说明:
-     * - 此文件包含搜索引擎配置（引擎名称、搜索 URL、启用状态）
-     * - 不包含任何敏感信息（如密码、令牌等）
-     * - 这是 Xposed 模块跨进程共享配置的标准做法
-     * - 虽然此模式已被标记为 deprecated，但对于 Xposed 模块来说是必需的
-     */
-    @SuppressWarnings("deprecation")
-    private static final int PREFS_MODE = Context.MODE_WORLD_READABLE;
-
     // ------------------------- 读写配置 -------------------------
 
-    @SuppressWarnings("deprecation")
+    /**
+     * 加载搜索引擎配置
+     * 使用 MODE_PRIVATE 创建 SharedPreferences（避免 Android N+ 的 SecurityException）
+     */
     public static List<SearchEngineConfig> loadEngines(Context context) {
         if (context == null) {
             return new ArrayList<>();
         }
 
-        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, PREFS_MODE);
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         String json = sp.getString(KEY_ENGINES, null);
 
         if (json == null || json.isEmpty()) {
@@ -51,7 +43,16 @@ public class ConfigManager {
         return list;
     }
 
-    @SuppressWarnings("deprecation")
+    /**
+     * 保存搜索引擎配置
+     * 
+     * 保存后会将文件设置为 world-readable，以便 Xposed hook 可以通过 XSharedPreferences 读取
+     * 
+     * 安全说明:
+     * - 此文件包含搜索引擎配置（引擎名称、搜索 URL、启用状态）
+     * - 不包含任何敏感信息（如密码、令牌等）
+     * - 这是 Xposed 模块跨进程共享配置的标准做法
+     */
     public static void saveEngines(Context context, List<SearchEngineConfig> list) {
         if (context == null) return;
         if (list == null) list = new ArrayList<>();
@@ -59,8 +60,56 @@ public class ConfigManager {
         String json = toJson(list);
         Log.d(TAG, "[APP] saveEngines size=" + list.size());
 
-        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, PREFS_MODE);
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
         sp.edit().putString(KEY_ENGINES, json).commit(); // 使用 commit() 而非 apply() 确保立即写入
+
+        // 设置文件为 world-readable，以便 XSharedPreferences 可以读取
+        makePrefsWorldReadable(context);
+    }
+
+    /**
+     * 将 SharedPreferences 文件设置为 world-readable
+     * 这是 Xposed 模块跨进程读取配置的标准做法
+     */
+    private static void makePrefsWorldReadable(Context context) {
+        try {
+            File prefsDir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
+            File prefsFile = new File(prefsDir, PREF_NAME + ".xml");
+            
+            if (prefsFile.exists()) {
+                // 设置文件可被其他进程读取
+                boolean success = prefsFile.setReadable(true, false);
+                if (success) {
+                    Log.d(TAG, "[APP] Set prefs file world-readable: " + prefsFile.getAbsolutePath());
+                } else {
+                    Log.w(TAG, "[APP] Failed to set prefs file world-readable");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[APP] Error making prefs world-readable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 初始化配置管理器
+     * 确保配置文件存在且可被 Xposed hook 读取
+     * 应在应用启动时调用
+     */
+    public static void init(Context context) {
+        if (context == null) return;
+        
+        // 确保 SharedPreferences 文件存在
+        SharedPreferences sp = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        
+        // 如果文件为空，写入空列表以创建文件
+        if (!sp.contains(KEY_ENGINES)) {
+            sp.edit().putString(KEY_ENGINES, toJson(new ArrayList<>())).commit();
+        }
+        
+        // 设置文件为 world-readable
+        makePrefsWorldReadable(context);
+        
+        Log.d(TAG, "[APP] ConfigManager initialized");
     }
 
     // ------------------------- 引擎发现与同步 -------------------------
