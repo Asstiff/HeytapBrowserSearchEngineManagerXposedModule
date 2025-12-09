@@ -706,21 +706,66 @@ public class XposedInit implements IXposedHookLoadPackage {
 
     /**
      * 刷新配置
-     * 优先使用 XSharedPreferences 读取配置（更可靠）
-     * 只有在 XSharedPreferences 读取失败时才回退到 ContentProvider
+     * 优先从浏览器本地文件读取（最可靠）
+     * 如果失败，尝试 XSharedPreferences
+     * 最后回退到 ContentProvider
      */
     private void refreshConfig() {
-        // 方法1: 使用 XSharedPreferences（更可靠，不依赖主应用进程）
+        // 方法1: 从浏览器本地存储读取（最可靠，hook 运行在浏览器进程内）
+        boolean loadedFromBrowser = refreshConfigFromBrowserLocal();
+        
+        if (loadedFromBrowser) {
+            return;
+        }
+        
+        // 方法2: 使用 XSharedPreferences（备用）
         boolean loadedFromPrefs = refreshConfigFromPrefs();
         
         if (loadedFromPrefs) {
             return;
         }
 
-        // 方法2: 回退到 ContentProvider（需要主应用运行）
-        // 注意: 仅在 XSharedPreferences 完全无法读取时使用
-        XposedBridge.log("XposedSearch: XSharedPreferences failed, trying ContentProvider fallback");
+        // 方法3: 回退到 ContentProvider（需要主应用运行）
+        XposedBridge.log("XposedSearch: Local and XSharedPreferences failed, trying ContentProvider");
         refreshConfigFromProvider();
+    }
+
+    /**
+     * 从浏览器本地存储读取配置
+     * Hook 运行在浏览器进程内，有完全的读取权限
+     * @return true 如果成功读取
+     */
+    private boolean refreshConfigFromBrowserLocal() {
+        if (appContext == null) {
+            XposedBridge.log("XposedSearch: appContext is null, cannot load from browser local");
+            return false;
+        }
+
+        try {
+            List<SearchEngineConfig> configs = BrowserConfigManager.loadConfigInBrowser(appContext);
+            
+            engineConfigs.clear();
+            for (SearchEngineConfig cfg : configs) {
+                engineConfigs.put(cfg.key, new EngineConfig(
+                        cfg.key,
+                        cfg.name,
+                        cfg.searchUrl,
+                        cfg.enabled,
+                        cfg.isBuiltin,
+                        cfg.isRemovedFromBrowser,
+                        cfg.hasBuiltinConflict
+                ));
+            }
+
+            // 清理不再存在的代理
+            cleanupProxies();
+
+            XposedBridge.log("XposedSearch: refreshed config from browser local, count=" + engineConfigs.size());
+            return true;
+        } catch (Throwable t) {
+            XposedBridge.log("XposedSearch: [BrowserLocal] failed: " + t.getMessage());
+            return false;
+        }
     }
 
     /**
