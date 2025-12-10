@@ -100,10 +100,10 @@ fun DarkWordScreen(
                 )
             }
 
-            // 说明
-            item {
-                DarkWordInfoCard()
-            }
+//            // 说明
+//            item {
+//                DarkWordInfoCard()
+//            }
         }
     }
 }
@@ -154,7 +154,7 @@ private fun DarkWordSettingsCard(
         ) {
             SuperSwitch(
                 title = "禁用热词显示",
-                summary = "关闭搜索栏的热词推荐（完全不显示）",
+                summary = "关闭搜索栏的热词推荐",
                 checked = isDarkWordDisabled,
                 onCheckedChange = onDarkWordDisabledChange,
                 enabled = moduleEnabled,

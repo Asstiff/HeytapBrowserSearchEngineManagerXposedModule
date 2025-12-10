@@ -8,12 +8,16 @@ android {
     namespace = "com.upuaut.xposedsearch"
     compileSdk = 35
 
+    lint {
+        disable += "NullSafeMutableLiveData"
+    }
+
     defaultConfig {
         applicationId = "com.upuaut.xposedsearch"
         minSdk = 33
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

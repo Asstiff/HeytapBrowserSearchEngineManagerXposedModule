@@ -7,8 +7,6 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.net.Uri;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -30,6 +28,11 @@ public class PrefsCache {
     // 缓存有效期
     private static final long CACHE_TTL_MS = 5000L;
     private static long lastLoadTime = 0L;
+
+    // 性能优化：Provider 失败熔断机制
+    private static int providerFailureCount = 0;
+    private static final int MAX_FAILURES = 3; // 连续失败3次后不再尝试连接 Provider
+    private static boolean providerCircuitOpen = false; // 熔断器状态
 
     public static class EngineConfig {
         public String key;
@@ -65,16 +68,28 @@ public class PrefsCache {
             return memoryCache;
         }
 
-        // 1. 尝试从 ContentProvider 加载
-        if (loadFromProvider(context)) {
-            lastLoadTime = now;
-            saveToLocalCache(context);
-            return memoryCache;
+        // 1. 尝试从 ContentProvider 加载 (如果熔断器未开启)
+        if (!providerCircuitOpen) {
+            if (loadFromProvider(context)) {
+                lastLoadTime = now;
+                providerFailureCount = 0; // 成功一次就重置失败计数
+                saveToLocalCache(context);
+                return memoryCache;
+            } else {
+                providerFailureCount++;
+                if (providerFailureCount >= MAX_FAILURES) {
+                    providerCircuitOpen = true;
+                    XposedBridge.log("[" + TAG + "] PrefsCache: Provider failed " + MAX_FAILURES + " times. Circuit breaker OPEN. Switching to local/memory cache only.");
+                }
+            }
         }
 
-        // 2. Provider 失败，如果内存缓存有数据就用内存缓存
+        // 2. Provider 失败或熔断，如果内存缓存有数据就用内存缓存
         if (!memoryCache.isEmpty()) {
-            XposedBridge.log("[" + TAG + "] Using memory cache");
+            // 只有在非熔断状态下才频繁打 Log，避免刷屏
+            if (!providerCircuitOpen) {
+                XposedBridge.log("[" + TAG + "] Using memory cache");
+            }
             return memoryCache;
         }
 
@@ -100,6 +115,10 @@ public class PrefsCache {
      * 强制刷新缓存
      */
     public static void refresh(Context context) {
+        // 如果熔断器开启，refresh 也不再去请求 Provider，除非重启进程
+        // 或者你可以选择在 refresh 时尝试重置熔断器：
+        // providerCircuitOpen = false;
+        // 但考虑到性能问题，建议保持熔断，直到用户重启浏览器
         lastLoadTime = 0;
         getEngineConfigs(context);
     }
@@ -123,9 +142,11 @@ public class PrefsCache {
             ContentResolver resolver = context.getContentResolver();
             Uri uri = Uri.parse(PROVIDER_URI);
 
+            // 使用 acquireUnstableContentProviderClient 或者直接 query
+            // 注意：如果对方应用被杀或未启动，这里可能会阻塞或抛出异常
             cursor = resolver.query(uri, null, null, null, null);
             if (cursor == null) {
-                XposedBridge.log("[" + TAG + "] Provider returned null cursor");
+                // 这是一个常见的错误点，当 Provider 所在进程未启动且被系统阻止启动时，返回 null
                 return false;
             }
 
@@ -148,6 +169,7 @@ public class PrefsCache {
             return true;
 
         } catch (Throwable t) {
+            // 捕获所有异常，包括 SecurityException (权限问题) 或 IllegalStateException
             XposedBridge.log("[" + TAG + "] Provider load failed: " + t.getMessage());
             return false;
         } finally {
@@ -190,7 +212,8 @@ public class PrefsCache {
             }
 
             editor.apply();
-            XposedBridge.log("[" + TAG + "] Saved " + memoryCache.size() + " engines to local cache");
+            // 减少日志输出
+            // XposedBridge.log("[" + TAG + "] Saved " + memoryCache.size() + " engines to local cache");
 
         } catch (Throwable t) {
             XposedBridge.log("[" + TAG + "] Save to local cache failed: " + t.getMessage());

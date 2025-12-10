@@ -11,8 +11,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import de.robv.android.xposed.XposedBridge;
 
@@ -32,6 +30,11 @@ public class HotSitePrefsCache {
     // 缓存有效期
     private static final long CACHE_TTL_MS = 5000L;
     private static long lastLoadTime = 0L;
+
+    // 性能优化：Provider 失败熔断机制
+    private static int providerFailureCount = 0;
+    private static final int MAX_FAILURES = 3;
+    private static boolean providerCircuitOpen = false;
 
     public static class SiteConfig {
         public long id;
@@ -64,14 +67,23 @@ public class HotSitePrefsCache {
             return new ArrayList<>(memoryCacheList);
         }
 
-        if (loadFromProvider(context)) {
-            lastLoadTime = now;
-            saveToLocalCache(context);
-            return new ArrayList<>(memoryCacheList);
+        if (!providerCircuitOpen) {
+            if (loadFromProvider(context)) {
+                lastLoadTime = now;
+                providerFailureCount = 0;
+                saveToLocalCache(context);
+                return new ArrayList<>(memoryCacheList);
+            } else {
+                providerFailureCount++;
+                if (providerFailureCount >= MAX_FAILURES) {
+                    providerCircuitOpen = true;
+                    XposedBridge.log("[" + TAG + "] HotSitePrefs: Provider failed " + MAX_FAILURES + " times. Circuit breaker OPEN.");
+                }
+            }
         }
 
         if (!memoryCacheList.isEmpty()) {
-            XposedBridge.log("[" + TAG + "] HotSites: Using memory cache");
+            if (!providerCircuitOpen) XposedBridge.log("[" + TAG + "] HotSites: Using memory cache");
             return new ArrayList<>(memoryCacheList);
         }
 
@@ -103,7 +115,6 @@ public class HotSitePrefsCache {
 
             cursor = resolver.query(uri, null, null, null, null);
             if (cursor == null) {
-                XposedBridge.log("[" + TAG + "] HotSites: Provider returned null cursor");
                 return false;
             }
 
