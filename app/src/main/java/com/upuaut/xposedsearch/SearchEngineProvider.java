@@ -1,3 +1,4 @@
+// SearchEngineProvider.java
 package com.upuaut.xposedsearch;
 
 import android.content.ContentProvider;
@@ -8,7 +9,6 @@ import android.database.MatrixCursor;
 import android.net.Uri;
 import android.util.Log;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -16,22 +16,21 @@ import java.util.Set;
 public class SearchEngineProvider extends ContentProvider {
 
     private static final String TAG = "XposedSearch";
-    public static final String AUTHORITY = "com.upuaut.xposedsearch.engines";
+
+    public static final String AUTHORITY = ConfigManager.AUTHORITY;
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/engines");
     public static final Uri DISCOVER_URI = Uri.parse("content://" + AUTHORITY + "/discover");
     public static final Uri DISCOVER_COMPLETE_URI = Uri.parse("content://" + AUTHORITY + "/discover_complete");
 
     private static final int CODE_ENGINES = 1;
     private static final int CODE_DISCOVER = 2;
-    private static final int CODE_ENGINE_ITEM = 3;
-    private static final int CODE_DISCOVER_COMPLETE = 4;
+    private static final int CODE_DISCOVER_COMPLETE = 3;
 
     private static final UriMatcher uriMatcher = new UriMatcher(UriMatcher.NO_MATCH);
 
     static {
         uriMatcher.addURI(AUTHORITY, "engines", CODE_ENGINES);
         uriMatcher.addURI(AUTHORITY, "discover", CODE_DISCOVER);
-        uriMatcher.addURI(AUTHORITY, "engines/*", CODE_ENGINE_ITEM);
         uriMatcher.addURI(AUTHORITY, "discover_complete", CODE_DISCOVER_COMPLETE);
     }
 
@@ -48,7 +47,6 @@ public class SearchEngineProvider extends ContentProvider {
     public static final String COL_PENDING_NAME = "pendingName";
     public static final String COL_PENDING_SEARCH_URL = "pendingSearchUrl";
     public static final String COL_IS_REMOVED = "isRemovedFromBrowser";
-    // 新增列
     public static final String COL_HAS_BUILTIN_CONFLICT = "hasBuiltinConflict";
     public static final String COL_CONFLICT_BUILTIN_NAME = "conflictBuiltinName";
     public static final String COL_CONFLICT_BUILTIN_SEARCH_URL = "conflictBuiltinSearchUrl";
@@ -67,24 +65,10 @@ public class SearchEngineProvider extends ContentProvider {
                         String[] selectionArgs, String sortOrder) {
         Log.d(TAG, "[Provider] query called, uri=" + uri);
 
-        int match = uriMatcher.match(uri);
-
-        if (match == CODE_ENGINES) {
+        if (uriMatcher.match(uri) == CODE_ENGINES) {
             List<SearchEngineConfig> engines = ConfigManager.loadEngines(getContext());
             Log.d(TAG, "[Provider] loaded engines count=" + engines.size());
             return buildCursor(engines);
-
-        } else if (match == CODE_ENGINE_ITEM) {
-            String key = uri.getLastPathSegment();
-            List<SearchEngineConfig> engines = ConfigManager.loadEngines(getContext());
-            SearchEngineConfig engine = ConfigManager.findByKey(engines, key);
-
-            if (engine != null) {
-                List<SearchEngineConfig> single = new ArrayList<>();
-                single.add(engine);
-                return buildCursor(single);
-            }
-            return null;
         }
 
         return null;
@@ -119,7 +103,6 @@ public class SearchEngineProvider extends ContentProvider {
             });
         }
 
-        Log.d(TAG, "[Provider] returning cursor with " + cursor.getCount() + " rows");
         return cursor;
     }
 
@@ -137,40 +120,18 @@ public class SearchEngineProvider extends ContentProvider {
             String searchUrl = values.getAsString("searchUrl");
 
             if (key != null && !key.isEmpty()) {
-                // 追踪发现的引擎
                 currentDiscoveredKeys.add(key);
-
-                boolean updated = ConfigManager.handleDiscoveredEngine(getContext(), key, name, searchUrl);
-                if (updated && getContext() != null) {
-                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
-                }
+                ConfigManager.handleDiscoveredEngine(getContext(), key, name, searchUrl);
                 return Uri.withAppendedPath(CONTENT_URI, key);
             }
 
         } else if (match == CODE_DISCOVER_COMPLETE) {
-            // 发现完成，标记未发现的引擎为已消失
+            // 发现完成
             if (!currentDiscoveredKeys.isEmpty()) {
                 ConfigManager.markMissingEnginesAsRemoved(getContext(), currentDiscoveredKeys);
                 currentDiscoveredKeys.clear();
-                if (getContext() != null) {
-                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
-                }
             }
             return DISCOVER_COMPLETE_URI;
-
-        } else if (match == CODE_ENGINES) {
-            // 添加自定义引擎
-            String key = values.getAsString("key");
-            String name = values.getAsString("name");
-            String searchUrl = values.getAsString("searchUrl");
-
-            if (key != null && !key.isEmpty()) {
-                boolean success = ConfigManager.addCustomEngine(getContext(), key, name, searchUrl);
-                if (success && getContext() != null) {
-                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
-                    return Uri.withAppendedPath(CONTENT_URI, key);
-                }
-            }
         }
 
         return null;
@@ -178,113 +139,11 @@ public class SearchEngineProvider extends ContentProvider {
 
     @Override
     public int update(Uri uri, ContentValues values, String selection, String[] selectionArgs) {
-        Log.d(TAG, "[Provider] update called, uri=" + uri);
-        if (values == null) return 0;
-
-        if (uriMatcher.match(uri) == CODE_ENGINE_ITEM) {
-            String key = uri.getLastPathSegment();
-            if (key == null) return 0;
-
-            // 重置操作
-            Boolean reset = values.getAsBoolean("reset");
-            if (reset != null && reset) {
-                boolean success = ConfigManager.resetEngine(getContext(), key);
-                if (success && getContext() != null) {
-                    getContext().getContentResolver().notifyChange(uri, null);
-                    return 1;
-                }
-                return 0;
-            }
-
-            // 应用更新操作
-            Boolean applyUpdate = values.getAsBoolean("applyUpdate");
-            if (applyUpdate != null && applyUpdate) {
-                ConfigManager.applyPendingUpdate(getContext(), key);
-                if (getContext() != null) {
-                    getContext().getContentResolver().notifyChange(uri, null);
-                }
-                return 1;
-            }
-
-            // 忽略更新操作
-            Boolean ignoreUpdate = values.getAsBoolean("ignoreUpdate");
-            if (ignoreUpdate != null && ignoreUpdate) {
-                ConfigManager.ignorePendingUpdate(getContext(), key);
-                if (getContext() != null) {
-                    getContext().getContentResolver().notifyChange(uri, null);
-                }
-                return 1;
-            }
-
-            // 转换为自定义引擎
-            Boolean convertToCustom = values.getAsBoolean("convertToCustom");
-            if (convertToCustom != null && convertToCustom) {
-                ConfigManager.convertToCustomEngine(getContext(), key);
-                if (getContext() != null) {
-                    getContext().getContentResolver().notifyChange(uri, null);
-                }
-                return 1;
-            }
-
-            // 转换为内置引擎（处理冲突）
-            Boolean convertToBuiltin = values.getAsBoolean("convertToBuiltin");
-            if (convertToBuiltin != null && convertToBuiltin) {
-                ConfigManager.convertCustomToBuiltin(getContext(), key);
-                if (getContext() != null) {
-                    getContext().getContentResolver().notifyChange(uri, null);
-                }
-                return 1;
-            }
-
-            // 创建副本（处理冲突）
-            Boolean createCopy = values.getAsBoolean("createCopy");
-            if (createCopy != null && createCopy) {
-                String newKey = ConfigManager.createCustomEngineCopy(getContext(), key);
-                if (newKey != null && getContext() != null) {
-                    getContext().getContentResolver().notifyChange(CONTENT_URI, null);
-                }
-                return newKey != null ? 1 : 0;
-            }
-
-            String name = values.getAsString("name");
-            String searchUrl = values.getAsString("searchUrl");
-            Boolean enabled = values.getAsBoolean("enabled");
-
-            List<SearchEngineConfig> engines = ConfigManager.loadEngines(getContext());
-            SearchEngineConfig engine = ConfigManager.findByKey(engines, key);
-            if (engine == null) return 0;
-
-            if (name != null || searchUrl != null) {
-                ConfigManager.updateEngineByUser(getContext(), key,
-                        name != null ? name : engine.name,
-                        searchUrl != null ? searchUrl : engine.searchUrl,
-                        enabled != null ? enabled : engine.enabled);
-            } else if (enabled != null) {
-                ConfigManager.updateEngineEnabled(getContext(), key, enabled);
-            }
-
-            if (getContext() != null) {
-                getContext().getContentResolver().notifyChange(uri, null);
-            }
-            return 1;
-        }
-
         return 0;
     }
 
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
-        Log.d(TAG, "[Provider] delete called, uri=" + uri);
-
-        if (uriMatcher.match(uri) == CODE_ENGINE_ITEM) {
-            String key = uri.getLastPathSegment();
-            boolean success = ConfigManager.deleteEngine(getContext(), key);
-            if (success && getContext() != null) {
-                getContext().getContentResolver().notifyChange(uri, null);
-                return 1;
-            }
-        }
-
         return 0;
     }
 

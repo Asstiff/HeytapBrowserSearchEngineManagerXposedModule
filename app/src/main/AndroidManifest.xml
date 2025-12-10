@@ -17,7 +17,7 @@
         <!-- ContentProvider -->
         <provider
             android:name=".SearchEngineProvider"
-            android:authorities="com.upuaut.xposedsearch.engines"
+            android:authorities="com.upuaut.xposedsearch.provider"
             android:exported="true"
             android:grantUriPermissions="true" />
 
