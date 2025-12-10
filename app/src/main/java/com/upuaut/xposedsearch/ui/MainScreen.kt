@@ -1,3 +1,4 @@
+// app/src/main/java/com/upuaut/xposedsearch/ui/MainScreen.kt
 package com.upuaut.xposedsearch.ui
 
 import android.widget.Toast
@@ -5,11 +6,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -19,7 +20,6 @@ import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -34,14 +34,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.upuaut.xposedsearch.SearchEngineConfig
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.extra.SuperDialog
-import top.yukonga.miuix.kmp.extra.SuperSwitch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 @Composable
 fun MainScreen(
-    viewModel: MainViewModel = viewModel()
+    viewModel: MainViewModel = viewModel(),
+    onBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -50,7 +50,7 @@ fun MainScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshAll()
+                viewModel.refreshEngines()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -69,7 +69,6 @@ fun MainScreen(
     val showAddDialog = remember { mutableStateOf(uiState.showAddDialog) }
     val showEditDialog = remember { mutableStateOf(uiState.editingEngine != null) }
     val showDeleteDialog = remember { mutableStateOf(uiState.deletingEngine != null) }
-    val showHideIconDialog = remember { mutableStateOf(uiState.showHideIconConfirmDialog) }
     val showUpdateDialog = remember { mutableStateOf(uiState.updatingEngine != null) }
     val showRemovedDialog = remember { mutableStateOf(uiState.removedEngine != null) }
     val showConflictDialog = remember { mutableStateOf(uiState.conflictEngine != null) }
@@ -77,28 +76,30 @@ fun MainScreen(
     LaunchedEffect(uiState.showAddDialog) { showAddDialog.value = uiState.showAddDialog }
     LaunchedEffect(uiState.editingEngine) { showEditDialog.value = uiState.editingEngine != null }
     LaunchedEffect(uiState.deletingEngine) { showDeleteDialog.value = uiState.deletingEngine != null }
-    LaunchedEffect(uiState.showHideIconConfirmDialog) { showHideIconDialog.value = uiState.showHideIconConfirmDialog }
     LaunchedEffect(uiState.updatingEngine) { showUpdateDialog.value = uiState.updatingEngine != null }
     LaunchedEffect(uiState.removedEngine) { showRemovedDialog.value = uiState.removedEngine != null }
     LaunchedEffect(uiState.conflictEngine) { showConflictDialog.value = uiState.conflictEngine != null }
 
-    // 获取导航条高度
-    val navigationBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-
-    // 滚动行为 - 用于动态标题栏效果
     val topAppBarScrollBehavior = MiuixScrollBehavior()
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = "HeytapEngineManager",
-                scrollBehavior = topAppBarScrollBehavior
+                title = "搜索引擎",
+                scrollBehavior = topAppBarScrollBehavior,
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回"
+                        )
+                    }
+                }
             )
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { viewModel.showAddDialog(true) },
-                modifier = Modifier.padding(bottom = navigationBarPadding)
+                onClick = { viewModel.showAddDialog(true) }
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
@@ -107,56 +108,20 @@ fun MainScreen(
                 )
             }
         }
-    ) { paddingValues ->
+    ) { innerPadding ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .scrollEndHaptic() // 滚动到底部振动效果
-                .overScrollVertical() // 过度滚动回弹效果
-                .nestedScroll(topAppBarScrollBehavior.nestedScrollConnection), // 连接滚动行为
+                .scrollEndHaptic()
+                .overScrollVertical()
+                .nestedScroll(topAppBarScrollBehavior.nestedScrollConnection),
             contentPadding = PaddingValues(
-                top = paddingValues.calculateTopPadding() + 12.dp,
-                bottom = 80.dp + navigationBarPadding
+                top = innerPadding.calculateTopPadding() + 12.dp,
+                bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 80.dp
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            overscrollEffect = null // 禁用默认的 overscroll 效果，使用 miuix 的
+            overscrollEffect = null
         ) {
-            item {
-                StatusCard(
-                    hasRootAccess = uiState.hasRootAccess,
-                    isCheckingRoot = uiState.isCheckingRoot,
-                    isXposedActive = uiState.isXposedActive
-                )
-            }
-
-            item {
-                SettingsCard(
-                    isIconHidden = uiState.isIconHidden,
-                    hasRootAccess = uiState.hasRootAccess,
-                    isForceStoppingBrowser = uiState.isForceStoppingBrowser,
-                    onIconHiddenChange = { hidden ->
-                        if (hidden) {
-                            viewModel.setIconHidden(true)
-                            Toast.makeText(context, "桌面图标已隐藏\n可通过 LSPosed 打开本应用", Toast.LENGTH_LONG).show()
-                        } else {
-                            viewModel.setIconHidden(false)
-                            Toast.makeText(context, "桌面图标已恢复显示", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onForceStop = {
-                        val success = viewModel.forceStopBrowser()
-                        if (success) {
-                            Toast.makeText(context, "浏览器已强制停止", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "需要 Root 权限", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onOpenBrowser = {
-                        viewModel.openBrowser()
-                    }
-                )
-            }
-
             if (uiState.engines.isEmpty()) {
                 item {
                     Box(
@@ -337,171 +302,10 @@ fun MainScreen(
             }
         )
     }
-
-    HideIconConfirmDialog(
-        show = showHideIconDialog,
-        onDismiss = { viewModel.showHideIconConfirmDialog(false) },
-        onConfirm = {
-            viewModel.setIconHidden(true)
-            viewModel.showHideIconConfirmDialog(false)
-            Toast.makeText(context, "桌面图标已隐藏\n可通过 LSPosed 打开本应用", Toast.LENGTH_LONG).show()
-        }
-    )
 }
 
-// 其余组件保持不变...
 private val CardPadding = 20.dp
 private val ActionButtonColor = Color(0xFFBDBDBD)
-
-@Composable
-fun StatusCard(
-    hasRootAccess: Boolean,
-    isCheckingRoot: Boolean,
-    isXposedActive: Boolean
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(CardPadding),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "状态",
-                style = MiuixTheme.textStyles.headline1
-            )
-
-            StatusItem(
-                label = "Root 状态",
-                isActive = hasRootAccess,
-                isLoading = isCheckingRoot,
-                activeText = "已获取",
-                inactiveText = "未获取",
-                loadingText = "检测中..."
-            )
-
-            StatusItem(
-                label = "Xposed 状态",
-                isActive = isXposedActive,
-                isLoading = false,
-                activeText = "已激活",
-                inactiveText = "未激活",
-                loadingText = ""
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatusItem(
-    label: String,
-    isActive: Boolean,
-    isLoading: Boolean,
-    activeText: String,
-    inactiveText: String,
-    loadingText: String
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MiuixTheme.textStyles.body1
-        )
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (!isLoading) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (isActive) Color(0xFF4CAF50) else Color(0xFFF44336)
-                        )
-                )
-            }
-            Text(
-                text = when {
-                    isLoading -> loadingText
-                    isActive -> activeText
-                    else -> inactiveText
-                },
-                style = MiuixTheme.textStyles.body2,
-                color = when {
-                    isLoading -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    isActive -> Color(0xFF4CAF50)
-                    else -> Color(0xFFF44336)
-                }
-            )
-        }
-    }
-}
-
-@Composable
-fun SettingsCard(
-    isIconHidden: Boolean,
-    hasRootAccess: Boolean,
-    isForceStoppingBrowser: Boolean,
-    onIconHiddenChange: (Boolean) -> Unit,
-    onForceStop: () -> Unit,
-    onOpenBrowser: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(CardPadding),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "设置",
-                style = MiuixTheme.textStyles.headline1
-            )
-
-            SuperSwitch(
-                title = "隐藏桌面图标",
-                summary = "隐藏后可通过 LSPosed 打开",
-                checked = isIconHidden,
-                onCheckedChange = onIconHiddenChange,
-                insideMargin = PaddingValues(0.dp)
-            )
-
-            HorizontalDivider()
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                TextButton(
-                    text = if (isForceStoppingBrowser) "停止中..." else "强行停止",
-                    onClick = onForceStop,
-                    enabled = hasRootAccess && !isForceStoppingBrowser,
-                    modifier = Modifier.weight(1f)
-                )
-
-                TextButton(
-                    text = "打开浏览器",
-                    onClick = onOpenBrowser,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.textButtonColorsPrimary()
-                )
-            }
-        }
-    }
-}
 
 @Composable
 fun EngineItem(
@@ -1051,45 +855,6 @@ fun DeleteConfirmDialog(
                 )
                 TextButton(
                     text = "删除",
-                    onClick = onConfirm,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.textButtonColorsPrimary()
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun HideIconConfirmDialog(
-    show: MutableState<Boolean>,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    SuperDialog(
-        title = "隐藏桌面图标",
-        show = show,
-        onDismissRequest = onDismiss
-    ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "隐藏后，只能通过 LSPosed 模块管理界面打开本应用。\n\n确定要隐藏图标吗？",
-                color = MiuixTheme.colorScheme.onSurface
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                TextButton(
-                    text = "取消",
-                    onClick = onDismiss,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    text = "确定",
                     onClick = onConfirm,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.textButtonColorsPrimary()

@@ -1,4 +1,4 @@
-// SearchEngineProvider.java
+// app/src/main/java/com/upuaut/xposedsearch/SearchEngineProvider.java
 package com.upuaut.xposedsearch;
 
 import android.content.ContentProvider;
@@ -9,6 +9,10 @@ import android.database.MatrixCursor;
 import android.net.Uri;
 import android.util.Log;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -18,13 +22,22 @@ public class SearchEngineProvider extends ContentProvider {
     private static final String TAG = "XposedSearch";
 
     public static final String AUTHORITY = ConfigManager.AUTHORITY;
+
     public static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/engines");
     public static final Uri DISCOVER_URI = Uri.parse("content://" + AUTHORITY + "/discover");
     public static final Uri DISCOVER_COMPLETE_URI = Uri.parse("content://" + AUTHORITY + "/discover_complete");
 
+    public static final Uri HOTSITES_URI = Uri.parse("content://" + AUTHORITY + "/hotsites");
+    public static final Uri HOTSITES_DISCOVER_URI = Uri.parse("content://" + AUTHORITY + "/hotsites_discover");
+
+    public static final Uri DARKWORD_URI = Uri.parse("content://" + AUTHORITY + "/darkword");
+
     private static final int CODE_ENGINES = 1;
     private static final int CODE_DISCOVER = 2;
     private static final int CODE_DISCOVER_COMPLETE = 3;
+    private static final int CODE_HOTSITES = 4;
+    private static final int CODE_HOTSITES_DISCOVER = 5;
+    private static final int CODE_DARKWORD = 6;
 
     private static final UriMatcher uriMatcher = new UriMatcher(UriMatcher.NO_MATCH);
 
@@ -32,26 +45,11 @@ public class SearchEngineProvider extends ContentProvider {
         uriMatcher.addURI(AUTHORITY, "engines", CODE_ENGINES);
         uriMatcher.addURI(AUTHORITY, "discover", CODE_DISCOVER);
         uriMatcher.addURI(AUTHORITY, "discover_complete", CODE_DISCOVER_COMPLETE);
+        uriMatcher.addURI(AUTHORITY, "hotsites", CODE_HOTSITES);
+        uriMatcher.addURI(AUTHORITY, "hotsites_discover", CODE_HOTSITES_DISCOVER);
+        uriMatcher.addURI(AUTHORITY, "darkword", CODE_DARKWORD);
     }
 
-    // 列名
-    public static final String COL_KEY = "key";
-    public static final String COL_NAME = "name";
-    public static final String COL_SEARCH_URL = "searchUrl";
-    public static final String COL_ENABLED = "enabled";
-    public static final String COL_IS_BUILTIN = "isBuiltin";
-    public static final String COL_IS_MODIFIED = "isModified";
-    public static final String COL_ORIGINAL_NAME = "originalName";
-    public static final String COL_ORIGINAL_SEARCH_URL = "originalSearchUrl";
-    public static final String COL_HAS_UPDATE = "hasUpdate";
-    public static final String COL_PENDING_NAME = "pendingName";
-    public static final String COL_PENDING_SEARCH_URL = "pendingSearchUrl";
-    public static final String COL_IS_REMOVED = "isRemovedFromBrowser";
-    public static final String COL_HAS_BUILTIN_CONFLICT = "hasBuiltinConflict";
-    public static final String COL_CONFLICT_BUILTIN_NAME = "conflictBuiltinName";
-    public static final String COL_CONFLICT_BUILTIN_SEARCH_URL = "conflictBuiltinSearchUrl";
-
-    // 用于追踪本次发现的引擎
     private Set<String> currentDiscoveredKeys = new HashSet<>();
 
     @Override
@@ -63,34 +61,41 @@ public class SearchEngineProvider extends ContentProvider {
     @Override
     public Cursor query(Uri uri, String[] projection, String selection,
                         String[] selectionArgs, String sortOrder) {
-        Log.d(TAG, "[Provider] query called, uri=" + uri);
+        int match = uriMatcher.match(uri);
 
-        if (uriMatcher.match(uri) == CODE_ENGINES) {
-            List<SearchEngineConfig> engines = ConfigManager.loadEngines(getContext());
-            Log.d(TAG, "[Provider] loaded engines count=" + engines.size());
-            return buildCursor(engines);
+        switch (match) {
+            case CODE_ENGINES: {
+                List<SearchEngineConfig> engines = ConfigManager.loadEngines(getContext());
+                return buildEnginesCursor(engines);
+            }
+            case CODE_HOTSITES: {
+                List<HotSiteConfig> sites = HotSiteConfigManager.loadSites(getContext());
+                boolean moduleEnabled = HotSiteConfigManager.isModuleEnabled(getContext());
+                return buildHotSitesCursor(sites, moduleEnabled);
+            }
+            case CODE_DARKWORD: {
+                boolean moduleEnabled = DarkWordConfigManager.isModuleEnabled(getContext());
+                boolean darkWordDisabled = DarkWordConfigManager.isDarkWordDisabled(getContext());
+                return buildDarkWordCursor(moduleEnabled, darkWordDisabled);
+            }
         }
 
         return null;
     }
 
-    private MatrixCursor buildCursor(List<SearchEngineConfig> engines) {
+    private MatrixCursor buildEnginesCursor(List<SearchEngineConfig> engines) {
         String[] columns = {
-                COL_KEY, COL_NAME, COL_SEARCH_URL, COL_ENABLED,
-                COL_IS_BUILTIN, COL_IS_MODIFIED, COL_ORIGINAL_NAME, COL_ORIGINAL_SEARCH_URL,
-                COL_HAS_UPDATE, COL_PENDING_NAME, COL_PENDING_SEARCH_URL, COL_IS_REMOVED,
-                COL_HAS_BUILTIN_CONFLICT, COL_CONFLICT_BUILTIN_NAME, COL_CONFLICT_BUILTIN_SEARCH_URL
+                "key", "name", "searchUrl", "enabled",
+                "isBuiltin", "isModified", "originalName", "originalSearchUrl",
+                "hasUpdate", "pendingName", "pendingSearchUrl", "isRemovedFromBrowser",
+                "hasBuiltinConflict", "conflictBuiltinName", "conflictBuiltinSearchUrl"
         };
         MatrixCursor cursor = new MatrixCursor(columns);
 
         for (SearchEngineConfig cfg : engines) {
             cursor.addRow(new Object[]{
-                    cfg.key,
-                    cfg.name,
-                    cfg.searchUrl,
-                    cfg.enabled ? 1 : 0,
-                    cfg.isBuiltin ? 1 : 0,
-                    cfg.isModified ? 1 : 0,
+                    cfg.key, cfg.name, cfg.searchUrl, cfg.enabled ? 1 : 0,
+                    cfg.isBuiltin ? 1 : 0, cfg.isModified ? 1 : 0,
                     cfg.originalName != null ? cfg.originalName : "",
                     cfg.originalSearchUrl != null ? cfg.originalSearchUrl : "",
                     cfg.hasUpdate ? 1 : 0,
@@ -106,32 +111,96 @@ public class SearchEngineProvider extends ContentProvider {
         return cursor;
     }
 
+    private MatrixCursor buildHotSitesCursor(List<HotSiteConfig> sites, boolean moduleEnabled) {
+        String[] columns = {"id", "name", "url", "iconUrl", "enabled", "order", "moduleEnabled"};
+        MatrixCursor cursor = new MatrixCursor(columns);
+
+        for (HotSiteConfig cfg : sites) {
+            cursor.addRow(new Object[]{
+                    cfg.id,
+                    cfg.name != null ? cfg.name : "",
+                    cfg.url != null ? cfg.url : "",
+                    cfg.iconUrl != null ? cfg.iconUrl : "",
+                    cfg.enabled ? 1 : 0,
+                    cfg.order,
+                    moduleEnabled ? 1 : 0
+            });
+        }
+
+        return cursor;
+    }
+
+    private MatrixCursor buildDarkWordCursor(boolean moduleEnabled, boolean darkWordDisabled) {
+        String[] columns = {"moduleEnabled", "darkWordDisabled"};
+        MatrixCursor cursor = new MatrixCursor(columns);
+
+        // 只返回一行，包含状态信息
+        cursor.addRow(new Object[]{
+                moduleEnabled ? 1 : 0,
+                darkWordDisabled ? 1 : 0
+        });
+
+        return cursor;
+    }
+
     @Override
     public Uri insert(Uri uri, ContentValues values) {
-        Log.d(TAG, "[Provider] insert called, uri=" + uri);
         if (values == null) return null;
 
         int match = uriMatcher.match(uri);
 
-        if (match == CODE_DISCOVER) {
-            // 从浏览器发现引擎
-            String key = values.getAsString("key");
-            String name = values.getAsString("name");
-            String searchUrl = values.getAsString("searchUrl");
+        switch (match) {
+            case CODE_DISCOVER: {
+                String key = values.getAsString("key");
+                String name = values.getAsString("name");
+                String searchUrl = values.getAsString("searchUrl");
 
-            if (key != null && !key.isEmpty()) {
-                currentDiscoveredKeys.add(key);
-                ConfigManager.handleDiscoveredEngine(getContext(), key, name, searchUrl);
-                return Uri.withAppendedPath(CONTENT_URI, key);
+                if (key != null && !key.isEmpty()) {
+                    currentDiscoveredKeys.add(key);
+                    ConfigManager.handleDiscoveredEngine(getContext(), key, name, searchUrl);
+                    return Uri.withAppendedPath(CONTENT_URI, key);
+                }
+                break;
             }
 
-        } else if (match == CODE_DISCOVER_COMPLETE) {
-            // 发现完成
-            if (!currentDiscoveredKeys.isEmpty()) {
-                ConfigManager.markMissingEnginesAsRemoved(getContext(), currentDiscoveredKeys);
-                currentDiscoveredKeys.clear();
+            case CODE_DISCOVER_COMPLETE: {
+                if (!currentDiscoveredKeys.isEmpty()) {
+                    ConfigManager.markMissingEnginesAsRemoved(getContext(), currentDiscoveredKeys);
+                    currentDiscoveredKeys.clear();
+                }
+                return DISCOVER_COMPLETE_URI;
             }
-            return DISCOVER_COMPLETE_URI;
+
+            case CODE_HOTSITES_DISCOVER: {
+                String sitesJson = values.getAsString("sites");
+                if (sitesJson != null && !sitesJson.isEmpty()) {
+                    try {
+                        JSONArray array = new JSONArray(sitesJson);
+                        List<HotSiteConfig> discoveredSites = new ArrayList<>();
+
+                        for (int i = 0; i < array.length(); i++) {
+                            JSONObject obj = array.getJSONObject(i);
+                            HotSiteConfig site = new HotSiteConfig();
+                            site.id = obj.optLong("id", System.currentTimeMillis());
+                            site.name = obj.optString("name", "");
+                            site.url = obj.optString("url", "");
+                            site.iconUrl = obj.optString("iconUrl", "");
+                            site.enabled = true;
+                            site.order = i;
+
+                            if (!site.url.isEmpty()) {
+                                discoveredSites.add(site);
+                            }
+                        }
+
+                        HotSiteConfigManager.handleDiscoveredSites(getContext(), discoveredSites);
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "[Provider] Failed to parse discovered sites: " + e.getMessage());
+                    }
+                }
+                return HOTSITES_DISCOVER_URI;
+            }
         }
 
         return null;
@@ -149,6 +218,6 @@ public class SearchEngineProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return "vnd.android.cursor.dir/vnd.xposedsearch.engine";
+        return "vnd.android.cursor.dir/vnd.xposedsearch";
     }
 }
