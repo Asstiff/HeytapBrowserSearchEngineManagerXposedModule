@@ -1,9 +1,16 @@
-// app/src/main/java/com/upuaut/xposedsearch/ui/HotSitesScreen.kt
 package com.upuaut.xposedsearch.ui
 
 import android.widget.Toast
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -11,6 +18,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -27,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -55,6 +64,8 @@ fun HotSitesScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
     // 监听生命周期，返回时刷新
     DisposableEffect(lifecycleOwner) {
@@ -74,15 +85,25 @@ fun HotSitesScreen(
 
     // 拖拽状态
     val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
 
-    // 使用可变列表来实时更新排序
+    // UI 临时列表：用于拖拽时的实时显示
     val sites = remember { mutableStateListOf<HotSiteConfig>() }
-    var draggedItemIndex by remember { mutableIntStateOf(-1) }
-    var draggedOffset by remember { mutableFloatStateOf(0f) }
+
+    // 【关键修改1】分离状态
+    // draggingSiteId: 控制位移逻辑、zIndex。在回弹动画结束前保持有值。
+    var draggingSiteId by remember { mutableStateOf<Long?>(null) }
+    // heldSiteId: 控制缩放、阴影视觉。手指松开立刻变空。
+    var heldSiteId by remember { mutableStateOf<Long?>(null) }
+
+    // 动画状态管理 - 只在父级管理位移
+    val dragOffset = remember { Animatable(0f) }
+
+    // 记录列表项的高度（像素），用于计算拖拽阈值
+    var itemHeightPx by remember { mutableIntStateOf(with(density) { (72 + 12).dp.roundToPx() }) }
 
     LaunchedEffect(uiState.sites) {
-        if (draggedItemIndex < 0) {
+        // 只有在非拖拽状态下才同步数据，防止拖拽时数据跳变
+        if (draggingSiteId == null) {
             sites.clear()
             sites.addAll(uiState.sites)
         }
@@ -156,8 +177,6 @@ fun HotSitesScreen(
                     isEnabled = uiState.isModuleEnabled,
                     onEnabledChange = { enabled ->
                         viewModel.setModuleEnabled(enabled)
-                        val msg = if (enabled) "热门网站管理已启用" else "热门网站管理已禁用"
-                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -177,16 +196,14 @@ fun HotSitesScreen(
                     }
                 }
             } else {
-                // 小标题和编辑按钮
                 item {
                     Row(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp),
+                            .fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        SmallTitle(text = "网站", modifier = Modifier.padding(0.dp))
+                        SmallTitle(text = "网站")
 
                         Text(
                             text = if (isEditMode) "完成" else "编辑",
@@ -196,13 +213,12 @@ fun HotSitesScreen(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
                                 ) {
-                                    if (isEditMode && draggedItemIndex < 0) {
-                                        // 退出编辑模式时保存排序
+                                    if (isEditMode) {
                                         viewModel.reorderSites(sites.map { it.id })
                                     }
                                     isEditMode = !isEditMode
                                 }
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .padding(horizontal = 24.dp)
                         )
                     }
                 }
@@ -210,58 +226,90 @@ fun HotSitesScreen(
                 itemsIndexed(
                     items = sites,
                     key = { _, site -> site.id }
-                ) { index, site ->
-                    val isDragging = draggedItemIndex == index
+                ) { _, site ->
+                    val isDragging = draggingSiteId == site.id
+                    // 【关键修改2】判断是否被按住
+                    val isHeld = heldSiteId == site.id
 
                     DraggableHotSiteItem(
                         site = site,
                         isEditMode = isEditMode,
-                        isDragging = isDragging,
-                        dragOffset = if (isDragging) draggedOffset else 0f,
+                        isDragging = isDragging, // 用于 zIndex 和位移判断
+                        isHeld = isHeld,         // 用于 缩放/阴影 视觉判断
+                        dragOffset = if (isDragging) dragOffset.value else 0f,
                         onEnabledChange = { enabled ->
                             viewModel.updateSiteEnabled(site.id, enabled)
                         },
                         onEdit = { viewModel.showEditDialog(site) },
                         onDelete = { viewModel.showDeleteDialog(site) },
                         onDragStart = {
-                            draggedItemIndex = index
-                            draggedOffset = 0f
+                            draggingSiteId = site.id
+                            heldSiteId = site.id // 同时激活按住状态
+                            scope.launch { dragOffset.snapTo(0f) }
                         },
                         onDrag = { delta ->
-                            draggedOffset += delta
+                            scope.launch {
+                                val currentOffset = dragOffset.value + delta
+                                dragOffset.snapTo(currentOffset)
 
-                            // 计算目标位置
-                            val itemHeight = 72f
-                            val offsetItems = (draggedOffset / itemHeight).toInt()
-                            val targetIndex = (index + offsetItems).coerceIn(0, sites.size - 1)
+                                val currentIndex = sites.indexOfFirst { it.id == site.id }
+                                if (currentIndex == -1) return@launch
 
-                            if (targetIndex != index) {
-                                // 移动项目
-                                val item = sites.removeAt(index)
-                                sites.add(targetIndex, item)
-                                draggedItemIndex = targetIndex
-                                draggedOffset = draggedOffset - (offsetItems * itemHeight)
+                                val threshold = itemHeightPx.toFloat()
+
+                                // 向下拖拽
+                                if (currentOffset > threshold) {
+                                    if (currentIndex < sites.lastIndex) {
+                                        val item = sites.removeAt(currentIndex)
+                                        sites.add(currentIndex + 1, item)
+                                        dragOffset.snapTo(currentOffset - threshold)
+                                    }
+                                }
+                                // 向上拖拽
+                                else if (currentOffset < -threshold) {
+                                    if (currentIndex > 0) {
+                                        val item = sites.removeAt(currentIndex)
+                                        sites.add(currentIndex - 1, item)
+                                        dragOffset.snapTo(currentOffset + threshold)
+                                    }
+                                }
                             }
                         },
                         onDragEnd = {
-                            draggedItemIndex = -1
-                            draggedOffset = 0f
+                            // 【关键修改3】松手时，立即清除按住状态，视觉立刻回弹
+                            heldSiteId = null
+
+                            scope.launch {
+                                // 启动位移回弹
+                                dragOffset.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                                // 动画完全结束后，才清除位移逻辑状态
+                                draggingSiteId = null
+                            }
                         },
-                        modifier = Modifier.animateItem()
+                        onSizeChanged = { height ->
+                            val spacingPx = with(density) { 12.dp.roundToPx() }
+                            itemHeightPx = height + spacingPx
+                        },
+                        modifier = if (isDragging) Modifier else Modifier.animateItem()
                     )
                 }
             }
         }
     }
 
-    // 对话框
+    // Dialogs 代码保持不变...
     AddHotSiteDialog(
         show = showAddDialog,
         onDismiss = { viewModel.showAddDialog(false) },
         onConfirm = { name, url, iconUrl ->
             val success = viewModel.addSite(name, url, iconUrl)
             if (success) {
-                Toast.makeText(context, "已添加", Toast.LENGTH_SHORT).show()
                 viewModel.showAddDialog(false)
             } else {
                 Toast.makeText(context, "URL已存在", Toast.LENGTH_SHORT).show()
@@ -276,7 +324,6 @@ fun HotSitesScreen(
             onDismiss = { viewModel.showEditDialog(null) },
             onConfirm = { name, url, iconUrl ->
                 viewModel.updateSite(site.id, name, url, iconUrl, site.enabled)
-                Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                 viewModel.showEditDialog(null)
             }
         )
@@ -289,7 +336,6 @@ fun HotSitesScreen(
             onDismiss = { viewModel.showDeleteDialog(null) },
             onConfirm = {
                 viewModel.deleteSite(site.id)
-                Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
                 viewModel.showDeleteDialog(null)
             }
         )
@@ -306,6 +352,7 @@ fun HotSitesScreen(
     )
 }
 
+// 辅助组件
 private val CardPadding = 20.dp
 private val ActionButtonColor = Color(0xFFBDBDBD)
 
@@ -339,7 +386,8 @@ fun ModuleEnableCard(
 fun DraggableHotSiteItem(
     site: HotSiteConfig,
     isEditMode: Boolean,
-    isDragging: Boolean,
+    isDragging: Boolean, // 仍需此参数来控制 zIndex 和是否应用 dragOffset
+    isHeld: Boolean,     // 新增：专门控制缩放和阴影
     dragOffset: Float,
     onEnabledChange: (Boolean) -> Unit,
     onEdit: () -> Unit,
@@ -347,30 +395,47 @@ fun DraggableHotSiteItem(
     onDragStart: () -> Unit,
     onDrag: (Float) -> Unit,
     onDragEnd: () -> Unit,
+    onSizeChanged: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
 
-    val elevation by animateDpAsState(
-        targetValue = if (isDragging) 8.dp else 0.dp,
-        label = "elevation"
+    val springSpec = spring<Float>(
+        dampingRatio = Spring.DampingRatioLowBouncy,
+        stiffness = Spring.StiffnessMediumLow
     )
 
+    // 【关键修改4】使用 isHeld 控制视觉动画
     val scale by animateFloatAsState(
-        targetValue = if (isDragging) 1.02f else 1f,
+        targetValue = if (isHeld) 1.05f else 1f,
+        animationSpec = springSpec,
         label = "scale"
+    )
+
+    val elevation by animateDpAsState(
+        targetValue = if (isHeld) 8.dp else 0.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "elevation"
     )
 
     Card(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
-            .zIndex(if (isDragging) 1f else 0f)
+            .onSizeChanged { onSizeChanged(it.height) }
+            // zIndex 必须依赖 isDragging，因为即使松手了（isHeld=false），在回弹过程中它仍需在最上层
+            .zIndex(if (isDragging) 10f else 0f)
             .graphicsLayer {
                 translationY = dragOffset
                 scaleX = scale
                 scaleY = scale
                 shadowElevation = with(density) { elevation.toPx() }
+
+                shape = RoundedCornerShape(20.dp)
+                clip = false
             }
     ) {
         Row(
@@ -380,7 +445,7 @@ fun DraggableHotSiteItem(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 拖动把手 - 编辑模式显示
+            // 拖动把手
             AnimatedVisibility(
                 visible = isEditMode,
                 enter = fadeIn() + expandHorizontally(),
@@ -439,6 +504,7 @@ fun DraggableHotSiteItem(
     }
 }
 
+// Dialogs 保持不变...
 @Composable
 fun AddHotSiteDialog(
     show: MutableState<Boolean>,

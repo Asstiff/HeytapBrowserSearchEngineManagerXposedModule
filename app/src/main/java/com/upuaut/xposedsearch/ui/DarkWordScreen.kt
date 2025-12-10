@@ -80,8 +80,6 @@ fun DarkWordScreen(
                     isEnabled = uiState.isModuleEnabled,
                     onEnabledChange = { enabled: Boolean ->
                         viewModel.setModuleEnabled(enabled)
-                        val msg = if (enabled) "热词管理已启用" else "热词管理已禁用"
-                        Toast.makeText(context, "$msg，重启浏览器生效", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -98,8 +96,6 @@ fun DarkWordScreen(
                     moduleEnabled = uiState.isModuleEnabled,
                     onDarkWordDisabledChange = { disabled: Boolean ->
                         viewModel.setDarkWordDisabled(disabled)
-                        val msg = if (disabled) "热词已禁用" else "热词已启用"
-                        Toast.makeText(context, "$msg，重启浏览器生效", Toast.LENGTH_SHORT).show()
                     }
                 )
             }

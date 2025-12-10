@@ -43,6 +43,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.animation)
     compileOnly("de.robv.android.xposed:api:82")
 
     // Compose BOM

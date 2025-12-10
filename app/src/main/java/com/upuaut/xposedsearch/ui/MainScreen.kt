@@ -153,7 +153,6 @@ fun MainScreen(
                         onReset = if (engine.canReset()) {
                             {
                                 viewModel.resetEngine(engine.key)
-                                Toast.makeText(context, "已恢复默认", Toast.LENGTH_SHORT).show()
                             }
                         } else null,
                         onUpdate = if (engine.hasPendingUpdate()) {
@@ -198,7 +197,6 @@ fun MainScreen(
         onConfirm = { key, name, url ->
             val success = viewModel.addCustomEngine(key, name, url)
             if (success) {
-                Toast.makeText(context, "已添加", Toast.LENGTH_SHORT).show()
                 viewModel.showAddDialog(false)
             } else {
                 Toast.makeText(context, "标识符已存在", Toast.LENGTH_SHORT).show()
@@ -214,12 +212,10 @@ fun MainScreen(
             onConfirm = { newKey, name, url ->
                 if (engine.isBuiltin) {
                     viewModel.updateEngine(engine.key, name, url, engine.enabled)
-                    Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                     viewModel.showEditDialog(null)
                 } else {
                     val success = viewModel.updateCustomEngine(engine.key, newKey, name, url, engine.enabled)
                     if (success) {
-                        Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                         viewModel.showEditDialog(null)
                     } else {
                         Toast.makeText(context, "标识符已存在", Toast.LENGTH_SHORT).show()
@@ -239,7 +235,6 @@ fun MainScreen(
             onDismiss = { viewModel.showDeleteDialog(null) },
             onConfirm = {
                 viewModel.deleteEngine(engine.key)
-                Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
                 viewModel.showDeleteDialog(null)
             }
         )

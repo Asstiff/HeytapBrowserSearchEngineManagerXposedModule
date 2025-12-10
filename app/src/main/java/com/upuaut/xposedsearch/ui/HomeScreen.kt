@@ -95,7 +95,6 @@ fun HomeScreen(
                             Toast.makeText(context, "桌面图标已隐藏\n可通过 LSPosed 打开本应用", Toast.LENGTH_LONG).show()
                         } else {
                             viewModel.setIconHidden(false)
-                            Toast.makeText(context, "桌面图标已恢复显示", Toast.LENGTH_SHORT).show()
                         }
                     },
                     onForceStop = {
